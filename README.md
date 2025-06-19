@@ -1,49 +1,109 @@
-## About these scripts
+# Анализатор торговых пар Binance
 
-These scripts were created in order to support the selection of coin trading lists for use with automated trading strategies. Specifically, this one https://github.com/edeng23/binance-trade-bot
+Система для автоматического анализа торговых пар на криптовалютной бирже Binance с целью формирования оптимального портфеля на основе заданных критериев волатильности, длительности нахождения в боковике и минимальной корреляции между парами.
 
-## How to use
+## Описание проекта
 
-Install requirements with 
+Проект разработан для решения следующих задач:
 
-```python
-python install -r requirements.txt
+1. Отбор торговых пар, которые существуют не менее 1 года
+2. Выявление пар, которые находятся в боковике (в пределах 30% от цены) и имеют дневную волатильность не менее 5%
+3. Ранжирование пар от лучшей к худшей по заданным критериям
+4. Анализ корреляции между парами и формирование портфеля с минимальной взаимной корреляцией
+5. Визуализация результатов через веб-интерфейс
+
+## Структура проекта
+
+```
+binance_correlation_for_grids_trading/
+├── modules/
+│   ├── collector.py         # Модуль сбора данных с Binance API
+│   ├── processor.py         # Модуль обработки и ранжирования пар
+│   ├── correlation.py       # Модуль анализа корреляций
+│   └── portfolio.py         # Модуль построения оптимального портфеля
+├── app.py                   # Веб-интерфейс на Streamlit
+├── config.json.example      # Пример файла конфигурации с API ключами
+├── requirements.txt         # Зависимости проекта
+├── technical_requirements.md # Техническое задание
+└── README.md                # Описание проекта
 ```
 
-The scripts are python notebooks, whilst they use python 3, you will need jupyter notebook (or something that reads notebook docs) to access it.
-https://jupyter.org/
+## Требования
 
+- Python 3.x
+- Ключи API Binance
 
-## Automatic Correlated Coin List - auto_coin_list.ipynb
-##### WARNING - This can take some time to run as it downloads a lot of data from binance servers
-An automatic coin list generator that will scout binance for the most correlated trading pairs to a single starting coin. It will 
+## Установка и настройка
 
-1. Provide an automatic list for running a reverse greedy trading algorithm
-2. Plot a volatility histogram
-3. Plot correlation heat maps over different periods
-4. calculate trade volume in USD and warn against coins at high risk of slippage
+1. Клонируйте репозиторий:
+   ```
+   git clone https://github.com/username/binance_correlation_for_grids_trading.git
+   cd binance_correlation_for_grids_trading
+   ```
 
+2. Создайте виртуальное окружение и установите зависимости:
+   ```
+   python -m venv venv
+   venv\Scripts\activate  # Для Windows
+   # source venv/bin/activate  # Для Linux/Mac
+   pip install -r requirements.txt
+   ```
 
+3. Создайте файл конфигурации с вашими API ключами Binance:
+   ```
+   copy config.json.example config.json
+   # Отредактируйте config.json, добавив ваши ключи API
+   ```
 
-## binance_correlation_script
+4. Запустите веб-интерфейс:
+   ```
+   streamlit run app.py
+   ```
+   ```
 
-A jupyter notebook that calculates correlation matrices for crypto coins in binance exchange
+## Использование
 
-This script will require a binance API key to run and will do the following
+1. Откройте веб-интерфейс по адресу http://localhost:8501
+2. Введите свои API ключи Binance
+3. Настройте параметры анализа
+4. Нажмите кнопку "Запустить анализ"
+5. Просмотрите результаты на соответствующих вкладках
 
+## Функциональность
 
-**1.** Download binance coin data from coinlist
+### Рейтинг пар
+- Отображение списка пар, ранжированных по заданным критериям
+- Информация о волатильности и диапазоне цены для каждой пары
+- Визуальное выделение лучших пар
 
-**2.** Produce correlation matrix for
+### Корреляции
+- Визуализация матрицы корреляций в виде тепловой карты
+- Выделение наименее коррелированных пар для формирования портфеля
 
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**Raw Coin value** (1 minute intervals)
+### Оптимальный портфель
+- Визуализация распределения активов в оптимальном портфеле
+- Статистика портфеля (ожидаемая доходность, волатильность, коэффициент Шарпа)
+- Таблица с весами активов
 
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**Detrended coin value** (first difference)
+### Графики
+- Визуализация динамики цен выбранных пар
+- Возможность выбора пар для отображения
 
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**Detrended coin value** (rolling mean) 
-  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**rolling mean** itself
+## Оригинальные скрипты
 
-coded in Python 3.7
+В рамках проекта также доступны оригинальные Jupyter ноутбуки:
 
+### auto_coin_list.ipynb
+Автоматический генератор списка монет, который ищет на Binance наиболее коррелированные торговые пары для выбранной монеты.
+
+### correlation script.ipynb
+Jupyter ноутбук, рассчитывающий матрицы корреляции для криптовалютных монет на бирже Binance.
+
+## Автор
+
+Проект разработан по техническому заданию, описанному в файле technical_requirements.md.
+
+## Лицензия
+
+MIT
 

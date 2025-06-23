@@ -272,7 +272,6 @@ with tab5:
         grid_step = st.slider("Шаг сетки (%)", 0.1, 2.0, 0.5, 0.1, key="grid_step")
         grid_range = st.slider("Диапазон сетки (%)", 5.0, 50.0, 20.0, 1.0, key="grid_range")
         stop_loss = st.slider("Стоп-лосс (%)", 1.0, 10.0, 5.0, 0.5, key="stop_loss")
-        stop_loss_coverage = st.slider("Покрытие убытков", 0.0, 1.0, 0.5, 0.1, key="stop_loss_coverage")
         
         stop_loss_strategy = st.selectbox(
             "Стратегия стоп-лосса",
@@ -287,18 +286,17 @@ with tab5:
             ["1h", "1d"],
             index=0,  # По умолчанию часовые данные
             help="Часовые данные дают более точные результаты для прибыльности",
-            key="timeframe_choice"
-        )
+            key="timeframe_choice"        )
         
         period_days = st.slider("Период тестирования (дней)", 7, 90, 30, 1, key="period_days")
         
-        st.subheader("Параметры молний")
+        st.subheader("Компенсация убытков")
         lightning_compensation = st.slider(
-            "Компенсация при молнии (%)", 
+            "Компенсация убытков (%)", 
             0.0, 50.0, 30.0, 1.0,
-            help="Процент компенсации убытков от молний второй сеткой (реальная торговля: ~30%)",
+            help="Процент компенсации убытков при стоп-лоссах и молниях другой сеткой (реальная торговля: ~30%)",
             key="lightning_compensation"
-        )        
+        )
         if st.button("Запустить симуляцию Grid Trading", key="run_grid_simulation"):
             if not api_key or not api_secret:
                 st.error("Введите API ключи для запуска симуляции")
@@ -353,8 +351,7 @@ with tab5:
                             )
                             st.metric(
                                 "Шаг сетки",
-                                f"{result.get('grid_step_used', grid_step):.2f}%"
-                            )
+                                f"{result.get('grid_step_used', grid_step):.2f}%"                            )
                         
                         with col_c:
                             st.metric(
@@ -364,26 +361,43 @@ with tab5:
                             st.metric(
                                 "Использованы комиссии",
                                 f"{result.get('commission_pct', 0.1):.2f}%"
-                            )                        # Детальная таблица
+                            )
+                        
+                        # Дополнительная информация о сделках
+                        col_d, col_e = st.columns(2)
+                        with col_d:
+                            st.metric(
+                                "Всего сделок",
+                                result.get('total_trades', 0)
+                            )
+                        with col_e:
+                            st.metric(
+                                "Процент успеха",
+                                f"{result.get('win_rate', 0):.1f}%"
+                            )
+                        
+                        # Детальная таблица
                         st.subheader("Детальная статистика")
                         
                         results_df = pd.DataFrame({
-                            'Метрика': [
-                                'Общая доходность (%)',
+                            'Метрика': [                                'Общая доходность (%)',
                                 'Long доходность (%)',
                                 'Short доходность (%)',
                                 'Выходы за сетку',
                                 'Шаг сетки (%)',
                                 'Таймфрейм',
                                 'Период (дней)',
-                                'Компенсация молний (%)',
+                                'Компенсация убытков (%)',
+                                'Всего сделок',
+                                'Прибыльных сделок',
+                                'Убыточных сделок',
+                                'Процент успеха (%)',
                                 'Стоп-лоссы (события)',
                                 'Стоп-лоссы (убытки %)',
                                 'Молнии (события)',
                                 'Молнии (чистые убытки %)'
                             ],
-                            'Значение': [
-                                f"{result.get('combined_pct', 0):.2f}",
+                            'Значение': [                                f"{result.get('combined_pct', 0):.2f}",
                                 f"{result.get('long_pct', 0):.2f}",
                                 f"{result.get('short_pct', 0):.2f}",
                                 str(result.get('breaks', 0)),
@@ -391,6 +405,10 @@ with tab5:
                                 str(timeframe_choice),
                                 str(period_days),
                                 f"{lightning_compensation:.1f}",
+                                str(result.get('total_trades', 0)),
+                                str(result.get('profitable_trades', 0)),
+                                str(result.get('losing_trades', 0)),
+                                f"{result.get('win_rate', 0):.1f}",
                                 str(result.get('total_stop_loss_count', 0)),
                                 f"{result.get('total_stop_loss_amount', 0):.2f}",
                                 str(result.get('total_lightning_count', 0)),
@@ -434,7 +452,7 @@ with tab5:
                                     st.write(f"- В среднем: {stop_loss_stats['short']['avg_loss']:.2f}%")
                             
                             with col_lt:
-                                st.markdown("### ⚡ Молнии (выходы за сетку)")
+                                st.markdown("### ⚡ Молнии и компенсация")
                                 lightning_stats = result.get('lightning_stats', {})
                                 
                                 # Общая статистика молний
@@ -476,7 +494,7 @@ with tab5:
                         st.info(f"**Параметры симуляции:**\n"
                                 f"- Шаг сетки: {grid_step}%\n"
                                 f"- Диапазон сетки: {grid_range}%\n"
-                                f"- Компенсация молний: {lightning_compensation}%\n"
+                                f"- Компенсация убытков: {lightning_compensation}%\n"
                                 f"- Используемые комиссии: 0.1%")
                         
                         # Рекомендации

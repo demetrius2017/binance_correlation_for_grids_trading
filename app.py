@@ -272,7 +272,6 @@ with tab5:
         grid_step = st.slider("Шаг сетки (%)", 0.1, 2.0, 0.5, 0.1, key="grid_step")
         grid_range = st.slider("Диапазон сетки (%)", 5.0, 50.0, 20.0, 1.0, key="grid_range")
         stop_loss = st.slider("Стоп-лосс (%)", 1.0, 10.0, 5.0, 0.5, key="stop_loss")
-        
         stop_loss_strategy = st.selectbox(
             "Стратегия стоп-лосса",
             ["independent", "close_both"],
@@ -283,20 +282,35 @@ with tab5:
     with col2:
         timeframe_choice = st.selectbox(
             "Таймфрейм для симуляции",
-            ["1h", "1d"],
-            index=0,  # По умолчанию часовые данные
-            help="Часовые данные дают более точные результаты для прибыльности",
-            key="timeframe_choice"        )
+            ["15m", "1h", "1d"],
+            index=1,  # По умолчанию часовые данные
+            help="15m - высокая точность (больше данных), 1h - стандарт, 1d - быстрое тестирование",
+            key="timeframe_choice"
+        )
         
         period_days = st.slider("Период тестирования (дней)", 7, 90, 30, 1, key="period_days")
         
+        # Предупреждение о времени и объеме загрузки
+        if timeframe_choice == "15m":
+            max_days_15m = int(1000 / (24 * 4)) # ~10.4 days for 1000 candles
+            expected_candles = period_days * 24 * 4
+            st.info(f"📊 15-минутный таймфрейм: {expected_candles} свечей за {period_days} дней")
+            if period_days > max_days_15m:
+                st.warning(f"⚠️ **Внимание:** API Binance вернет максимум 1000 свечей (~{max_days_15m} дней). Будут загружены только последние данные.")
+        elif timeframe_choice == "1h" and period_days > 60:
+            expected_candles = period_days * 24
+            st.warning(f"⚠️ **Внимание:** Запрос {expected_candles} часовых свечей может занять 2-5 секунд")
+        elif timeframe_choice == "1h" and period_days > 30:
+            st.info(f"ℹ️ Загрузка {period_days * 24} часовых свечей займет ~1-2 секунды")
+        
         st.subheader("Компенсация убытков")
-        lightning_compensation = st.slider(
+        loss_compensation_pct = st.slider(
             "Компенсация убытков (%)", 
             0.0, 50.0, 30.0, 1.0,
-            help="Процент компенсации убытков при стоп-лоссах и молниях другой сеткой (реальная торговля: ~30%)",
-            key="lightning_compensation"
+            help="Процент компенсации убытков (от стоп-лоссов и молний) прибылью от другой сетки.",
+            key="loss_compensation_pct"
         )
+        
         if st.button("Запустить симуляцию Grid Trading", key="run_grid_simulation"):
             if not api_key or not api_secret:
                 st.error("Введите API ключи для запуска симуляции")
@@ -304,16 +318,31 @@ with tab5:
                 try:
                     # Создаем экземпляры классов
                     collector = BinanceDataCollector(api_key, api_secret)
-                    grid_analyzer = GridAnalyzer(collector)                    # Получаем данные для симуляции
+                    grid_analyzer = GridAnalyzer(collector)
+                    # Получаем данные для симуляции
+                    import time
+                    loading_start = time.time()
+                    
                     with st.spinner("Загружаем данные для симуляции..."):
-                        if timeframe_choice == "1h":
+                        if timeframe_choice == "15m":
+                            expected_candles = period_days * 24 * 4  # 15-минутные свечи
+                            df = collector.get_historical_data(grid_symbol, "15m", period_days * 24 * 4)
+                        elif timeframe_choice == "1h":
+                            expected_candles = period_days * 24
                             df = collector.get_historical_data(grid_symbol, "1h", period_days * 24)
                         else:
+                            expected_candles = period_days
                             df = collector.get_historical_data(grid_symbol, "1d", period_days)
-                        
+                    
+                    loading_time = time.time() - loading_start
+                    
                     if df.empty:
                         st.error(f"Нет данных для пары {grid_symbol}")
                     else:
+                        # Информация о загруженных данных
+                        st.info(f"📊 **Данные загружены:** {len(df)} свечей из {expected_candles} ожидаемых "
+                               f"⏱️ **Время загрузки:** {loading_time:.1f} сек")
+                        
                         with st.spinner("Выполняем симуляцию..."):
                             # Симуляция с полными параметрами включая стоп-лосс и компенсацию молний
                             result = grid_analyzer.estimate_dual_grid_by_candles(
@@ -322,7 +351,7 @@ with tab5:
                                 grid_step_pct=grid_step,
                                 commission_pct=0.1,  # Стандартная комиссия Binance
                                 stop_loss_pct=stop_loss,
-                                lightning_compensation=lightning_compensation
+                                loss_compensation_pct=loss_compensation_pct
                             )
                         
                         # Отображаем результаты
@@ -404,7 +433,7 @@ with tab5:
                                 f"{result.get('grid_step_pct', grid_step):.2f}",
                                 str(timeframe_choice),
                                 str(period_days),
-                                f"{lightning_compensation:.1f}",
+                                f"{loss_compensation_pct:.1f}",
                                 str(result.get('total_trades', 0)),
                                 str(result.get('profitable_trades', 0)),
                                 str(result.get('losing_trades', 0)),
@@ -466,102 +495,119 @@ with tab5:
                                 )
                                 st.metric(
                                     "Компенсация",
-                                    f"{result.get('total_lightning_compensation', 0):.2f}%"
+                                    f"{result.get('total_loss_compensation', 0):.2f}%"
                                 )
                                 st.metric(
                                     "Финальные убытки",
                                     f"{result.get('total_lightning_net_loss', 0):.2f}%"
                                 )
-                                
-                                # Раздельная статистика
-                                if lightning_stats.get('long', {}).get('count', 0) > 0:
-                                    st.write(f"**Long позиции (пробитие вверх):**")
-                                    st.write(f"- События: {lightning_stats['long']['count']}")
-                                    st.write(f"- Первоначальные убытки: {lightning_stats['long']['total_loss']:.2f}%")
-                                    st.write(f"- Компенсация: {lightning_stats['long']['total_compensation']:.2f}%")
-                                    st.write(f"- Финальные убытки: {lightning_stats['long']['net_loss']:.2f}%")
-                                
-                                if lightning_stats.get('short', {}).get('count', 0) > 0:
-                                    st.write(f"**Short позиции (пробитие вниз):**")
-                                    st.write(f"- События: {lightning_stats['short']['count']}")
-                                    st.write(f"- Первоначальные убытки: {lightning_stats['short']['total_loss']:.2f}%")
-                                    st.write(f"- Компенсация: {lightning_stats['short']['total_compensation']:.2f}%")
-                                    st.write(f"- Финальные убытки: {lightning_stats['short']['net_loss']:.2f}%")
                         
-                        # Информация о симуляции
-                        st.subheader("Информация о симуляции")
-                        
-                        st.info(f"**Параметры симуляции:**\n"
-                                f"- Шаг сетки: {grid_step}%\n"
-                                f"- Диапазон сетки: {grid_range}%\n"
-                                f"- Компенсация убытков: {lightning_compensation}%\n"
-                                f"- Используемые комиссии: 0.1%")
-                        
-                        # Рекомендации
-                        st.subheader("Выводы и рекомендации")
-                        if timeframe_choice == "1h":
-                            st.success("✅ Используются часовые данные - максимальная точность симуляции")
-                        else:
-                            st.info("ℹ️ Для более точных результатов рекомендуются часовые данные")
+                        # Таблицы сделок для каждой сетки
+                        if ('trades_long' in result and result['trades_long']) or \
+                           ('trades_short' in result and result['trades_short']):
                             
-                        if result.get('combined_pct', 0) > 0:
-                            st.success(f"✅ Стратегия прибыльна: {result.get('combined_pct', 0):.2f}%")
-                        else:
-                            st.warning(f"⚠️ Стратегия убыточна: {result.get('combined_pct', 0):.2f}%")
+                            st.subheader("📜 Журнал сделок")
                             
-                        st.info("💡 Интерфейс готов для тестирования с параметром компенсации молний")
-                        
+                            col_log_long, col_log_short = st.columns(2)
+
+                            # Функция для обработки и отображения DataFrame
+                            def display_trade_log(df, title):
+                                if not df.empty:
+                                    df_display = df.copy()
+                                    df_display['timestamp'] = pd.to_datetime(df_display['timestamp']).dt.strftime('%Y-%m-%d %H:%M')
+                                    df_display['price'] = df_display['price'].apply(lambda x: f"{x:.4f}")
+                                    df_display['pnl_pct'] = df_display['pnl_pct'].apply(lambda x: f"{x:+.2f}%")
+                                    df_display['balance_pct'] = df_display['balance_pct'].apply(lambda x: f"{x:.2f}%")
+                                    
+                                    df_display.rename(columns={
+                                        'timestamp': 'Время',
+                                        'type': 'Тип сделки',
+                                        'price': 'Цена',
+                                        'pnl_pct': 'PnL',
+                                        'balance_pct': 'Баланс',
+                                        'description': 'Описание'
+                                    }, inplace=True)
+                                    
+                                    st.markdown(f"##### {title}")
+                                    st.dataframe(df_display, height=400, use_container_width=True)
+                                else:
+                                    st.markdown(f"##### {title}")
+                                    st.info("Сделок не было.")
+
+                            # Журнал для Long сетки
+                            with col_log_long:
+                                trades_long_df = pd.DataFrame(result.get('trades_long', []))
+                                display_trade_log(trades_long_df, "📈 Long Сетка")
+
+                            # Журнал для Short сетки
+                            with col_log_short:
+                                trades_short_df = pd.DataFrame(result.get('trades_short', []))
+                                display_trade_log(trades_short_df, "📉 Short Сетка")
+
+                            # Объединение данных для скачивания
+                            if not trades_long_df.empty or not trades_short_df.empty:
+                                trades_long_df['Сетка'] = 'Long'
+                                trades_short_df['Сетка'] = 'Short'
+                                combined_df = pd.concat([trades_long_df, trades_short_df]).sort_values(by='timestamp').reset_index(drop=True)
+
+                                # Кнопка для скачивания
+                                @st.cache_data
+                                def convert_df_to_csv(df):
+                                    return df.to_csv(index=False).encode('utf-8')
+
+                                csv = convert_df_to_csv(combined_df)
+                                
+                                st.download_button(
+                                    label="📥 Скачать полный журнал сделок (CSV)",
+                                    data=csv,
+                                    file_name=f'trades_{grid_symbol}_{timeframe_choice}_{period_days}d_combined.csv',
+                                    mime='text/csv',
+                                )
+
                 except Exception as e:
-                    st.error(f"Ошибка при выполнении симуляции: {str(e)}")
+                    st.error(f"Произошла ошибка во время симуляции: {str(e)}")
+                    st.exception(e) # Выводим полный traceback для отладки
 
-
-def run_analysis():
-    """Основная функция анализа"""
-    try:
-        if not api_key or not api_secret:
-            st.error("Пожалуйста, введите API ключи Binance")
-            return
-        
-        with log_container:
-            st.info("Начинаем анализ торговых пар...")
-            # Инициализация компонентов
-            with st.spinner("Инициализация..."):
-                collector = BinanceDataCollector(api_key, api_secret)
-                grid_analyzer = GridAnalyzer(collector)
-            
-            # Получение списка популярных пар
-            with st.spinner("Получение списка торговых пар..."):
-                pairs = popular_pairs[:max_pairs]
-                st.success(f"Выбрано {len(pairs)} торговых пар для анализа")
-
-    except Exception as e:
-        log_container.error(f"Произошла ошибка: {str(e)}")
-        st.error(f"Произошла ошибка: {str(e)}")
-        return
-
-# Запускаем анализ при нажатии кнопки (только для первой вкладки)
+# Основной блок запуска анализа (если кнопка нажата)
 if start_analysis:
-    run_analysis()
-
-# Инструкции (показываем всегда в нижней части)
-st.markdown("---")
-st.info(
-    """
-    ### 💡 Инструкция по использованию
-    
-    **Grid Trading всегда доступен на вкладке ⚡ Grid Trading**
-    
-    1. Введите свои API ключи Binance в боковой панели
-    2. Перейдите на вкладку "⚡ Grid Trading"
-    3. Выберите пару, настройте параметры и запустите симуляцию
-    4. Для графиков используйте вкладку "📈 Графики"
-    
-    **Особенности:**
-    - Все расчеты с реальными комиссиями Binance (Maker 0.02%, Taker 0.05%)
-    - Часовые данные для максимальной точности
-    - Различные стратегии стоп-лосса
-    """
-)
-
-# Футер
-st.caption("© 2025 Анализатор торговых пар Binance")
+    if not api_key or not api_secret:
+        log_container.error("Введите API ключи для начала анализа.")
+    else:
+        try:
+            # Инициализация классов
+            log_container.info("Инициализация модулей...")
+            collector = BinanceDataCollector(api_key, api_secret)
+            processor = DataProcessor(collector)
+            analyzer = CorrelationAnalyzer(collector) # Исправлено: передаем collector
+            portfolio_builder = PortfolioBuilder(collector, analyzer) # Исправлено: передаем collector и analyzer
+            
+            # Получение и фильтрация пар
+            log_container.info("Получение и фильтрация торговых пар...")
+            all_pairs = collector.get_all_usdt_pairs()
+            filtered_pairs = processor.filter_pairs_by_volume_and_price(
+                all_pairs, 
+                min_volume=min_volume, 
+                min_price=min_price, 
+                max_price=max_price
+            )
+            
+            # Ограничиваем количество пар для анализа
+            pairs_to_analyze = filtered_pairs[:max_pairs]
+            log_container.success(f"Отобрано {len(pairs_to_analyze)} пар для анализа.")
+            
+            # Обновляем вкладку 1 с отфильтрованными парами
+            with tab1:
+                st.empty() # Очищаем предыдущий контент
+                st.subheader("Отфильтрованные пары для анализа")
+                pairs_df = pd.DataFrame({
+                    'Символ': pairs_to_analyze,
+                    'Описание': [f"Торговая пара {p}" for p in pairs_to_analyze]
+                })
+                st.dataframe(pairs_df, use_container_width=True)
+            
+            # Здесь можно добавить дальнейшую логику анализа, если требуется
+            # Например, расчет корреляций и построение портфеля
+            
+        except Exception as e:
+            log_container.error(f"Произошла ошибка: {str(e)}")
+            st.exception(e) # Выводим полный traceback для отладки

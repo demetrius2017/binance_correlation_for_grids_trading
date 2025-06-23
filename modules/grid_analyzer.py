@@ -312,23 +312,22 @@ class GridAnalyzer:
                                      grid_step_pct: float = 1.0,
                                      commission_pct: float = 0.1,
                                      stop_loss_pct: float = 5.0,
-                                     lightning_compensation: float = 30.0) -> Dict[str, Any]:
+                                     loss_compensation_pct: float = 30.0) -> Dict[str, Any]:
         """
-        Приближённая симуляция двух сеток (long + short) по дневным свечам.
-        Учёт проторговок тенями и убытков телами свечей, а также выхода за пределы сетки.
-        Детальное отслеживание убытков по стоп-лоссу и молниям с компенсацией.        """
-        total_long = 0.0
-        total_short = 0.0
+        Приближённая симуляция двух сеток (long + short) по свечам.
+        Учёт проторговок тенями, прибыли/убытков по телу свечи, а также выхода за пределы сетки.
+        Детальное отслеживание убытков по стоп-лоссу и молниям с компенсацией.
+        Возвращает детальный список всех сделок.
+        """
         breaks = 0
-          # Счетчики сделок (раздельно для каждой сетки)
-        total_trades_long = 0
-        total_trades_short = 0
         profitable_trades_long = 0
         profitable_trades_short = 0
         losing_trades_long = 0
         losing_trades_short = 0
+
+        trades_long = []
+        trades_short = []
         
-        # Детальная статистика убытков
         stop_loss_stats = {
             'long': {'count': 0, 'total_loss': 0.0, 'avg_loss': 0.0},
             'short': {'count': 0, 'total_loss': 0.0, 'avg_loss': 0.0}
@@ -339,153 +338,197 @@ class GridAnalyzer:
             'short': {'count': 0, 'total_loss': 0.0, 'total_compensation': 0.0, 'net_loss': 0.0}
         }
         
-        # Расчет шага сетки на основе ATR
         atr_pct = self.calculate_atr(df)
         recommended_step = max(atr_pct / 3, 0.5)
         actual_step = grid_step_pct if grid_step_pct > 0 else recommended_step
         
-        # Выводим отладочную информацию
-        print(f"Рекомендуемый шаг сетки: {recommended_step:.2f}%")
-        print(f"Используемый шаг сетки: {actual_step:.2f}%")
-        
-        # Расчет верхней и нижней границ сетки относительно начальной цены
         initial_price = df.iloc[0]['close']
         upper_bound = initial_price * (1 + grid_range_pct / 100)
         lower_bound = initial_price * (1 - grid_range_pct / 100)
         
-        for i, (_, row) in enumerate(df.iterrows()):
+        for i, (timestamp, row) in enumerate(df.iterrows()):
             open_p, high_p, low_p, close_p = row['open'], row['high'], row['low'], row['close']
             base = min(open_p, close_p)
             
-            # Проверка на выход за пределы сетки (молнии)
-            lightning_triggered = False
-            lightning_loss_long = 0.0
-            lightning_loss_short = 0.0
-            
-            if high_p > upper_bound:
-                lightning_triggered = True
-                lightning_loss_long = (high_p - upper_bound) / upper_bound * 100
-                lightning_stats['long']['count'] += 1
-                lightning_stats['long']['total_loss'] += lightning_loss_long
-                
-                # Применяем компенсацию
-                compensation = lightning_loss_long * (lightning_compensation / 100)
-                lightning_stats['long']['total_compensation'] += compensation
-                lightning_stats['long']['net_loss'] += lightning_loss_long - compensation
-                
-            if low_p < lower_bound:
-                lightning_triggered = True
-                lightning_loss_short = (lower_bound - low_p) / lower_bound * 100
-                lightning_stats['short']['count'] += 1
-                lightning_stats['short']['total_loss'] += lightning_loss_short
-                
-                # Применяем компенсацию
-                compensation = lightning_loss_short * (lightning_compensation / 100)
-                lightning_stats['short']['total_compensation'] += compensation
-                lightning_stats['short']['net_loss'] += lightning_loss_short - compensation
-            
-            # Проверка стоп-лосса
-            stop_loss_triggered_long = False
-            stop_loss_triggered_short = False
-            stop_loss_long = 0.0
-            stop_loss_short = 0.0
-              # Стоп-лосс для long позиций (падение цены)
-            price_drop_pct = (open_p - low_p) / open_p * 100
-            if price_drop_pct > stop_loss_pct:
-                stop_loss_triggered_long = True
-                # Применяем компенсацию к стоп-лоссу
-                compensated_loss = price_drop_pct * (1 - lightning_compensation / 100)
-                stop_loss_long = compensated_loss
-                stop_loss_stats['long']['count'] += 1
-                stop_loss_stats['long']['total_loss'] += price_drop_pct  # Первоначальная потеря
-            
-            # Стоп-лосс для short позиций (рост цены)
-            price_rise_pct = (high_p - open_p) / open_p * 100
-            if price_rise_pct > stop_loss_pct:
-                stop_loss_triggered_short = True
-                # Применяем компенсацию к стоп-лоссу
-                compensated_loss = price_rise_pct * (1 - lightning_compensation / 100)
-                stop_loss_short = compensated_loss
-                stop_loss_stats['short']['count'] += 1
-                stop_loss_stats['short']['total_loss'] += price_rise_pct  # Первоначальная потеря
-            
-            # Если сработали стопы или молнии, уменьшаем профит
-            if lightning_triggered or stop_loss_triggered_long or stop_loss_triggered_short:
+            # 1. Молнии (выход за пределы сетки и перезапуск)
+            if high_p > upper_bound or low_p < lower_bound:
                 breaks += 1
-              # расчёт тел и теней в процентах
-            body_pct = abs(close_p - open_p) / base * 100
+                
+                if high_p > upper_bound:
+                    # Short сетка: убыток
+                    loss = (high_p - upper_bound) / upper_bound * 100
+                    compensation = loss * (loss_compensation_pct / 100)
+                    net_loss = loss - compensation
+                    
+                    lightning_stats['short']['count'] += 1
+                    lightning_stats['short']['total_loss'] += loss
+                    lightning_stats['short']['total_compensation'] += compensation
+                    lightning_stats['short']['net_loss'] += net_loss
+                    
+                    losing_trades_short += 1
+                    trades_short.append({
+                        'timestamp': timestamp, 'type': 'Молния (Убыток)', 'price': high_p,
+                        'pnl_pct': -net_loss,
+                        'description': f"Пробой вверх, убыток {net_loss:.2f}%"
+                    })
+
+                    # Long сетка: прибыль
+                    closure_profit = grid_range_pct / 2.0
+                    profitable_trades_long += 1
+                    trades_long.append({
+                        'timestamp': timestamp, 'type': 'Молния (Профит)', 'price': high_p,
+                        'pnl_pct': closure_profit,
+                        'description': f"Фиксация прибыли при пробое вверх"
+                    })
+                else:  # low_p < lower_bound
+                    # Long сетка: убыток
+                    loss = (lower_bound - low_p) / lower_bound * 100
+                    compensation = loss * (loss_compensation_pct / 100)
+                    net_loss = loss - compensation
+
+                    lightning_stats['long']['count'] += 1
+                    lightning_stats['long']['total_loss'] += loss
+                    lightning_stats['long']['total_compensation'] += compensation
+                    lightning_stats['long']['net_loss'] += net_loss
+
+                    losing_trades_long += 1
+                    trades_long.append({
+                        'timestamp': timestamp, 'type': 'Молния (Убыток)', 'price': low_p,
+                        'pnl_pct': -net_loss,
+                        'description': f"Пробой вниз, убыток {net_loss:.2f}%"
+                    })
+
+                    # Short сетка: прибыль
+                    closure_profit = grid_range_pct / 2.0
+                    profitable_trades_short += 1
+                    trades_short.append({
+                        'timestamp': timestamp, 'type': 'Молния (Профит)', 'price': low_p,
+                        'pnl_pct': closure_profit,
+                        'description': f"Фиксация прибыли при пробое вниз"
+                    })
+
+                # Перезапуск сетки
+                upper_bound = close_p * (1 + grid_range_pct / 100)
+                lower_bound = close_p * (1 - grid_range_pct / 100)
+                reset_desc = f"Новый диапазон: {lower_bound:.4f} - {upper_bound:.4f}"
+                trades_short.append({'timestamp': timestamp, 'type': 'Перезапуск сетки', 'price': close_p, 'pnl_pct': 0, 'description': reset_desc})
+                trades_long.append({'timestamp': timestamp, 'type': 'Перезапуск сетки', 'price': close_p, 'pnl_pct': 0, 'description': reset_desc})
+                continue
+
+            # 2. Стоп-лоссы
+            price_drop_pct = (open_p - low_p) / open_p * 100
+            if stop_loss_pct > 0 and price_drop_pct > stop_loss_pct:
+                net_loss = price_drop_pct * (1 - loss_compensation_pct / 100)
+                stop_loss_stats['long']['count'] += 1
+                stop_loss_stats['long']['total_loss'] += net_loss
+                losing_trades_long += 1
+                trades_long.append({
+                    'timestamp': timestamp, 'type': 'Стоп-лосс', 'price': low_p,
+                    'pnl_pct': -net_loss,
+                    'description': f"Падение на {price_drop_pct:.2f}%, убыток {net_loss:.2f}%"
+                })
+
+            price_rise_pct = (high_p - open_p) / open_p * 100
+            if stop_loss_pct > 0 and price_rise_pct > stop_loss_pct:
+                net_loss = price_rise_pct * (1 - loss_compensation_pct / 100)
+                stop_loss_stats['short']['count'] += 1
+                stop_loss_stats['short']['total_loss'] += net_loss
+                losing_trades_short += 1
+                trades_short.append({
+                    'timestamp': timestamp, 'type': 'Стоп-лосс', 'price': high_p,
+                    'pnl_pct': -net_loss,
+                    'description': f"Рост на {price_rise_pct:.2f}%, убыток {net_loss:.2f}%"
+                })
+
+            # 3. Сделки по сетке (тени и тело)
+            profit_per_trade = actual_step - commission_pct
+            
+            # Верхняя тень (цена вверх, потом вниз) -> профит для Short, убыток для Long
             upper_wick_pct = (high_p - max(open_p, close_p)) / base * 100
-            lower_wick_pct = (min(open_p, close_p) - low_p) / low_p * 100
-              # ИСПРАВЛЕНА ЛОГИКА: берем только кратную шагу часть тени
-            # Количество полных шагов в тенях
             upper_wick_trades = int(upper_wick_pct / actual_step)
+            if upper_wick_trades > 0:
+                pnl = upper_wick_trades * profit_per_trade
+                profitable_trades_short += upper_wick_trades
+                trades_short.append({
+                    'timestamp': timestamp, 'type': 'Профит (Тень)', 'price': high_p,
+                    'pnl_pct': pnl, 'description': f'Верхняя тень ({upper_wick_trades} сделок)'
+                })
+                losing_trades_long += upper_wick_trades
+                trades_long.append({
+                    'timestamp': timestamp, 'type': 'Убыток (Тень)', 'price': high_p,
+                    'pnl_pct': -pnl, 'description': f'Верхняя тень ({upper_wick_trades} сделок)'
+                })
+
+            # Нижняя тень (цена вниз, потом вверх) -> профит для Long, убыток для Short
+            lower_wick_pct = (min(open_p, close_p) - low_p) / low_p * 100
             lower_wick_trades = int(lower_wick_pct / actual_step)
-              # Подсчет сделок - КАЖДАЯ ТЕНЬ РАБОТАЕТ ДЛЯ ОБЕИХ СЕТОК
-            # Верхняя тень: сделки для Long (покупает дешевле) и Short (продает дороже)
-            total_trades_long += upper_wick_trades
-            total_trades_short += upper_wick_trades
-            profitable_trades_long += upper_wick_trades  # Тени всегда прибыльны
-            profitable_trades_short += upper_wick_trades
-            
-            # Нижняя тень: сделки для Long (продает дороже) и Short (покупает дешевле)  
-            total_trades_long += lower_wick_trades
-            total_trades_short += lower_wick_trades
-            profitable_trades_long += lower_wick_trades  # Тени всегда прибыльны
-            profitable_trades_short += lower_wick_trades
-            
-            # Фактически отработанная часть теней (только кратная шагу)
-            upper_wick_traded_pct = upper_wick_trades * actual_step
-            lower_wick_traded_pct = lower_wick_trades * actual_step
-            total_wick_traded_pct = upper_wick_traded_pct + lower_wick_traded_pct
-            
-            # Профит с теней = только с отработанной части минус комиссии
-            profit_wicks = total_wick_traded_pct - (upper_wick_trades + lower_wick_trades) * commission_pct
-            
-            # убыток тел из-за одностороннего движения
-            is_red_candle = close_p < open_p
-            is_green_candle = close_p > open_p
-            
-            # Количество шагов сетки в теле свечи
+            if lower_wick_trades > 0:
+                pnl = lower_wick_trades * profit_per_trade
+                profitable_trades_long += lower_wick_trades
+                trades_long.append({
+                    'timestamp': timestamp, 'type': 'Профит (Тень)', 'price': low_p,
+                    'pnl_pct': pnl, 'description': f'Нижняя тень ({lower_wick_trades} сделок)'
+                })
+                losing_trades_short += lower_wick_trades
+                trades_short.append({
+                    'timestamp': timestamp, 'type': 'Убыток (Тень)', 'price': low_p,
+                    'pnl_pct': -pnl, 'description': f'Нижняя тень ({lower_wick_trades} сделок)'
+                })
+
+            # Прибыль/убыток от тела свечи
+            body_pct = abs(close_p - open_p) / base * 100
             body_steps = int(body_pct / actual_step)
-              # Расчет профита/убытка от тела свечи
-            long_body_pnl = -body_steps * actual_step if is_red_candle else 0  # Long теряет на падении
-            short_body_pnl = -body_steps * actual_step if is_green_candle else 0  # Short теряет на росте
-              # Подсчет убыточных сделок по телам - ТОЛЬКО ДЛЯ ОДНОЙ СЕТКИ
-            if is_red_candle and body_steps > 0:
-                # Красная свеча = убыток только для Long сетки
-                total_trades_long += body_steps
-                losing_trades_long += body_steps
-            if is_green_candle and body_steps > 0:
-                # Зеленая свеча = убыток только для Short сетки
-                total_trades_short += body_steps  
-                losing_trades_short += body_steps
-            
-            # Суммируем для двух сеток с учетом стоп-лоссов и молний
-            long_pnl = profit_wicks + long_body_pnl - stop_loss_long - lightning_stats['long']['net_loss']
-            short_pnl = profit_wicks + short_body_pnl - stop_loss_short - lightning_stats['short']['net_loss']
-            
-            # Обновляем общие суммы
-            total_long += long_pnl
-            total_short += short_pnl            # Отладочная информация для первых 3 свечей
-            if i < 3:
-                wick_trades_total = upper_wick_trades + lower_wick_trades
-                body_trades = body_steps if (is_red_candle or is_green_candle) else 0
-                print(f"Свеча {i+1}: Body: {body_pct:.2f}%, Upper Wick: {upper_wick_pct:.2f}%, Lower Wick: {lower_wick_pct:.2f}%")
-                print(f"  Шагов в теле: {body_steps}, в верхней тени: {upper_wick_trades}, в нижней тени: {lower_wick_trades}")
-                print(f"  Сделки: тени {wick_trades_total} (по {wick_trades_total} для каждой сетки), тела {body_trades} (только одна сетка)")
-                print(f"  Отработано: верхняя тень {upper_wick_traded_pct:.2f}% из {upper_wick_pct:.2f}%, нижняя тень {lower_wick_traded_pct:.2f}% из {lower_wick_pct:.2f}%")
-                print(f"  Недоработано: верхняя тень {upper_wick_pct - upper_wick_traded_pct:.2f}%, нижняя тень {lower_wick_pct - lower_wick_traded_pct:.2f}%")
-                print(f"  PnL Long: {long_pnl:.2f}%, PnL Short: {short_pnl:.2f}%")
-                if stop_loss_triggered_long or stop_loss_triggered_short:
-                    print(f"  Стоп-лосс: Long: {stop_loss_long:.2f}%, Short: {stop_loss_short:.2f}%")
-                if lightning_triggered:
-                    print(f"  Молния: Long: {lightning_loss_long:.2f}%, Short: {lightning_loss_short:.2f}%")
-          # Рассчитываем средние убытки
+            if body_steps > 0:
+                pnl = body_steps * profit_per_trade
+                if close_p > open_p:  # Зеленая свеча
+                    profitable_trades_long += body_steps
+                    trades_long.append({
+                        'timestamp': timestamp, 'type': 'Профит (Тело)', 'price': close_p,
+                        'pnl_pct': pnl, 'description': f'Тело ({body_steps} сделок)'
+                    })
+                    losing_trades_short += body_steps
+                    trades_short.append({
+                        'timestamp': timestamp, 'type': 'Убыток (Тело)', 'price': close_p,
+                        'pnl_pct': -pnl, 'description': f'Тело ({body_steps} сделок)'
+                    })
+                elif close_p < open_p:  # Красная свеча
+                    profitable_trades_short += body_steps
+                    trades_short.append({
+                        'timestamp': timestamp, 'type': 'Профит (Тело)', 'price': close_p,
+                        'pnl_pct': pnl, 'description': f'Тело ({body_steps} сделок)'
+                    })
+                    losing_trades_long += body_steps
+                    trades_long.append({
+                        'timestamp': timestamp, 'type': 'Убыток (Тело)', 'price': close_p,
+                        'pnl_pct': -pnl, 'description': f'Тело ({body_steps} сделок)'
+                    })
+
+        # Сортируем сделки по времени
+        trades_long.sort(key=lambda x: x['timestamp'])
+        trades_short.sort(key=lambda x: x['timestamp'])
+
+        # Считаем итоговую прибыль и баланс из журнала сделок
+        total_long = sum(trade['pnl_pct'] for trade in trades_long)
+        bal_long = 100.0
+        for trade in trades_long:
+            bal_long += trade['pnl_pct']
+            trade['balance_pct'] = bal_long
+
+        total_short = sum(trade['pnl_pct'] for trade in trades_short)
+        bal_short = 100.0
+        for trade in trades_short:
+            bal_short += trade['pnl_pct']
+            trade['balance_pct'] = bal_short
+
+        # Рассчитываем средние убытки
         if stop_loss_stats['long']['count'] > 0:
             stop_loss_stats['long']['avg_loss'] = stop_loss_stats['long']['total_loss'] / stop_loss_stats['long']['count']
         if stop_loss_stats['short']['count'] > 0:
             stop_loss_stats['short']['avg_loss'] = stop_loss_stats['short']['total_loss'] / stop_loss_stats['short']['count']
         
+        total_trades_long = profitable_trades_long + losing_trades_long
+        total_trades_short = profitable_trades_short + losing_trades_short
+
         return {
             'combined_pct': total_long + total_short,
             'long_pct': total_long,
@@ -495,8 +538,7 @@ class GridAnalyzer:
             'grid_step_used': actual_step,
             'commission_pct': commission_pct,
             'stop_loss_pct': stop_loss_pct,
-            'lightning_compensation': lightning_compensation,
-              # Информация о сделках - раздельная статистика
+            'loss_compensation_pct': loss_compensation_pct,
             'total_trades_long': total_trades_long,
             'total_trades_short': total_trades_short,
             'total_trades': total_trades_long + total_trades_short,
@@ -509,23 +551,19 @@ class GridAnalyzer:
             'win_rate_long': (profitable_trades_long / total_trades_long * 100) if total_trades_long > 0 else 0,
             'win_rate_short': (profitable_trades_short / total_trades_short * 100) if total_trades_short > 0 else 0,
             'win_rate': ((profitable_trades_long + profitable_trades_short) / (total_trades_long + total_trades_short) * 100) if (total_trades_long + total_trades_short) > 0 else 0,
-            
-            # Детальная статистика стоп-лоссов
             'stop_loss_stats': stop_loss_stats,
             'total_stop_loss_count': stop_loss_stats['long']['count'] + stop_loss_stats['short']['count'],
             'total_stop_loss_amount': stop_loss_stats['long']['total_loss'] + stop_loss_stats['short']['total_loss'],
-            
-            # Детальная статистика молний
             'lightning_stats': lightning_stats,
             'total_lightning_count': lightning_stats['long']['count'] + lightning_stats['short']['count'],
             'total_lightning_loss': lightning_stats['long']['total_loss'] + lightning_stats['short']['total_loss'],
             'total_lightning_compensation': lightning_stats['long']['total_compensation'] + lightning_stats['short']['total_compensation'],
             'total_lightning_net_loss': lightning_stats['long']['net_loss'] + lightning_stats['short']['net_loss'],
-            
-            # Границы сетки
             'upper_bound': upper_bound,
             'lower_bound': lower_bound,
-            'initial_price': initial_price
+            'initial_price': initial_price,
+            'trades_long': trades_long,
+            'trades_short': trades_short
         }
     
 

@@ -93,45 +93,47 @@ class BinanceDataCollector:
     
     def get_historical_data(self, symbol: str, interval: str, days: int) -> pd.DataFrame:
         """
-        Получение исторических данных для указанной пары.
+        Получение исторических данных за последние N дней для указанной пары.
         
         Args:
             symbol: Символ торговой пары
             interval: Интервал данных (например, "1d" для дневных свечей)
-            days: Количество дней для получения данных
+            days: Количество последних дней для получения данных
             
         Returns:
-            DataFrame с историческими данными
+            DataFrame с историческими данными (OHLCV)
         """
-        target_date = (datetime.now() - timedelta(days=days)).strftime("%d %b %Y %H:%M:%S")
-        end_date = datetime.now().strftime("%d %b %Y %H:%M:%S")
-        
-        klines = self.client.get_historical_klines(
-            symbol, interval, target_date, end_date, limit=1000
-        )
-        
-        data = []
-        for kline in klines:
-            date = datetime.fromtimestamp(kline[0] / 1000)
-            data.append({
-                'date': date,
-                'open': float(kline[1]),
-                'high': float(kline[2]),
-                'low': float(kline[3]),
-                'close': float(kline[4]),
-                'volume': float(kline[5]),
-                'close_time': datetime.fromtimestamp(kline[6] / 1000),
-                'quote_asset_volume': float(kline[7]),
-                'number_of_trades': int(kline[8]),
-                'taker_buy_base_asset_volume': float(kline[9]),
-                'taker_buy_quote_asset_volume': float(kline[10])
-            })
-        
-        df = pd.DataFrame(data)
-        if len(df) > 0:
-            df.set_index('date', inplace=True)
-        
-        return df
+        try:
+            # Рассчитываем дату начала на основе количества дней
+            start_date = datetime.now() - timedelta(days=days)
+            start_str = start_date.strftime("%Y-%m-%d %H:%M:%S")
+
+            # Получаем данные с Binance
+            klines = self.client.get_historical_klines(symbol, interval, start_str)
+            
+            if not klines:
+                print(f"Нет данных для {symbol} за последние {days} дней.")
+                return pd.DataFrame()
+
+            # Создаем DataFrame
+            df = pd.DataFrame(klines, columns=[
+                'timestamp', 'open', 'high', 'low', 'close', 'volume',
+                'close_time', 'quote_asset_volume', 'number_of_trades',
+                'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
+            ])
+            
+            # Преобразуем типы данных
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+            
+            for col in ['open', 'high', 'low', 'close', 'volume']:
+                df[col] = pd.to_numeric(df[col])
+            
+            return df[['open', 'high', 'low', 'close', 'volume']]
+            
+        except Exception as e:
+            print(f"Ошибка при получении исторических данных для {symbol}: {e}")
+            return pd.DataFrame()
     
     def calculate_volatility(self, df: pd.DataFrame) -> float:
         """
@@ -167,7 +169,7 @@ class BinanceDataCollector:
     
     def get_pair_stats(self, symbol: str, days: int = 365) -> Optional[Dict[str, Any]]:
         """
-        Получение статистики по торговой паре.
+        Получение статистики по торговой паре за указанный период.
         
         Args:
             symbol: Символ торговой пары

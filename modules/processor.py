@@ -152,7 +152,40 @@ class DataProcessor:
         filepath = os.path.join("data/processed", filename)
         self.ranked_pairs.to_csv(filepath, index=False)
         print(f"Результаты сохранены в {filepath}")
+    
+    def filter_pairs_by_volume_and_price(self, pairs: List[str], min_volume: float, min_price: float, max_price: float) -> List[str]:
+        """
+        Фильтрует пары по объему торгов и цене.
 
+        Args:
+            pairs: Список пар для фильтрации.
+            min_volume: Минимальный суточный объем в USDT.
+            min_price: Минимальная цена.
+            max_price: Максимальная цена.
+
+        Returns:
+            Список отфильтрованных пар.
+        """
+        try:
+            tickers = self.collector.client.get_ticker()
+            
+            # Создаем словарь для быстрого доступа к тикерам
+            tickers_dict = {ticker['symbol']: ticker for ticker in tickers}
+            
+            filtered_pairs = []
+            for symbol in pairs:
+                if symbol in tickers_dict:
+                    ticker = tickers_dict[symbol]
+                    volume = float(ticker.get('quoteVolume', 0))
+                    price = float(ticker.get('lastPrice', 0))
+                    
+                    if volume >= min_volume and min_price <= price <= max_price:
+                        filtered_pairs.append(symbol)
+            
+            return filtered_pairs
+        except Exception as e:
+            print(f"Ошибка при фильтрации пар: {e}")
+            return []
 
 if __name__ == "__main__":
     # Пример использования

@@ -199,6 +199,32 @@ class BinanceDataCollector:
         except Exception as e:
             print(f"Ошибка при получении статистики для {symbol}: {e}")
             return None
+        
+    def get_historical_klines(self, symbol: str, interval: str, start_str: str, end_str: Optional[str] = None) -> List[List[Any]]:
+        """
+        Получение исторических свечей для указанной пары.
+        
+        Args:
+            symbol: Символ торговой пары
+            interval: Интервал данных
+            start_str: Начальное время (в миллисекундах или строка даты)
+            end_str: Конечное время (в миллисекундах или строка даты)
+            
+        Returns:
+            Список свечей в формате Binance
+        """
+        try:
+            klines = self.client.get_historical_klines(
+                symbol=symbol,
+                interval=interval,
+                start_str=start_str,
+                end_str=end_str,
+                limit=1000
+            )
+            return klines
+        except Exception as e:
+            print(f"Ошибка при получении исторических данных для {symbol}: {e}")
+            return []
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ from modules.collector import BinanceDataCollector
 from modules.processor import DataProcessor
 from modules.correlation import CorrelationAnalyzer
 from modules.portfolio import PortfolioBuilder
+from modules.grid_analyzer import GridAnalyzer, MAKER_COMMISSION_RATE, TAKER_COMMISSION_RATE
 
 
 # Функции для сохранения и загрузки API ключей
@@ -58,301 +59,414 @@ st.markdown("---")
 
 # Боковая панель для ввода API ключей и параметров
 with st.sidebar:
-    st.header("Настройки")
+    st.header("Настройки API")
     
-    # Загрузка сохраненных API ключей
+    # Загружаем сохраненные ключи
     saved_api_key, saved_api_secret = load_api_keys()
     
-    # Ввод API ключей
-    api_key = st.text_input("API Key", value=saved_api_key)
-    api_secret = st.text_input("API Secret", value=saved_api_secret, type="password")
+    api_key = st.text_input(
+        "API Key", 
+        value=saved_api_key,
+        type="password", 
+        help="Введите ваш API ключ от Binance"
+    )
+    api_secret = st.text_input(
+        "API Secret", 
+        value=saved_api_secret,
+        type="password", 
+        help="Введите ваш секретный ключ от Binance"
+    )
     
-    # Кнопка сохранения API ключей
-    if st.button("Сохранить API ключи"):
+    # Кнопка для сохранения ключей
+    if st.button("Сохранить ключи"):
         if api_key and api_secret:
             save_api_keys(api_key, api_secret)
-            st.success("API ключи успешно сохранены!")
+            st.success("API ключи сохранены!")
         else:
-            st.error("Введите API ключи для сохранения.")
+            st.error("Введите оба ключа для сохранения")
     
-    st.subheader("Параметры анализа")
+    st.markdown("---")
     
     # Параметры анализа
-    min_age_days = st.slider("Минимальный возраст пары (дней)", 30, 365, 365)
-    min_volatility = st.slider("Минимальная дневная волатильность (%)", 1.0, 10.0, 5.0, 0.5)
-    max_range_percent = st.slider("Максимальный диапазон боковика (%)", 10.0, 50.0, 30.0, 1.0)
+    st.header("Параметры анализа")
     
-    # Параметры ранжирования
-    st.subheader("Параметры ранжирования")
-    volatility_weight = st.slider("Вес волатильности", 0.0, 1.0, 0.7, 0.1)
-    sideways_weight = st.slider("Вес боковика", 0.0, 1.0, 0.3, 0.1)
+    # Основные параметры
+    min_volume = st.number_input(
+        "Мин. объем торгов (USDT)", 
+        min_value=1000000, 
+        max_value=1000000000, 
+        value=10000000,
+        step=1000000,
+        help="Минимальный объем торгов за 24 часа"
+    )
     
-    # Параметры корреляции
-    st.subheader("Параметры корреляции")
-    correlation_method = st.selectbox("Метод расчета корреляции", ["pearson", "spearman", "kendall"])
-    correlation_threshold = st.slider("Пороговое значение корреляции", 0.1, 0.9, 0.3, 0.1)
+    min_price = st.number_input(
+        "Мин. цена (USDT)", 
+        min_value=0.0001, 
+        max_value=100.0, 
+        value=0.01,
+        step=0.01,
+        help="Минимальная цена актива"
+    )
     
-    # Параметры портфеля
-    st.subheader("Параметры портфеля")
-    optimization_goal = st.selectbox("Цель оптимизации", ["sharpe", "min_volatility"])
-    risk_free_rate = st.slider("Безрисковая ставка (%)", 0.0, 5.0, 0.0, 0.1) / 100.0
+    max_price = st.number_input(
+        "Макс. цена (USDT)", 
+        min_value=1.0, 
+        max_value=10000.0, 
+        value=100.0,
+        step=10.0,
+        help="Максимальная цена актива"
+    )
     
-    # Кнопка запуска анализа
-    start_analysis = st.button("Запустить анализ", type="primary")
+    max_pairs = st.slider(
+        "Количество пар для анализа", 
+        min_value=5, 
+        max_value=100, 
+        value=30,
+        help="Максимальное количество пар для детального анализа"
+    )
+    
+    # Параметры для сеточной торговли
+    st.subheader("Параметры Grid Trading")
+    
+    grid_range_pct = st.slider(
+        "Диапазон сетки (%)", 
+        min_value=5.0, 
+        max_value=50.0, 
+        value=20.0,
+        step=1.0,
+        help="Процентный диапазон для размещения сетки"
+    )
+    
+    grid_step_pct = st.slider(
+        "Шаг сетки (%)", 
+        min_value=0.1, 
+        max_value=5.0, 
+        value=1.0,
+        step=0.1,
+        help="Процентный шаг между уровнями сетки"
+    )
 
-# Основная область для отображения результатов
-tab1, tab2, tab3, tab4 = st.tabs(["Рейтинг пар", "Корреляции", "Оптимальный портфель", "Графики"])
+# Кнопка запуска анализа
+start_analysis = st.button("🚀 Запустить анализ", type="primary")
 
-# Функция для выполнения анализа
-def run_analysis():
-    if not api_key or not api_secret:
-        st.error("Пожалуйста, введите API ключи Binance")
-        return
+# Создаем контейнер для логов
+log_container = st.container()
+
+# Загружаем сохраненные ключи для использования в Grid Trading
+saved_api_key, saved_api_secret = load_api_keys()
+
+# Создаем вкладки (всегда доступны)
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "📊 Список пар", 
+    "🔗 Информация", 
+    "💼 Настройки", 
+    "📈 Графики",
+    "⚡ Grid Trading"
+])
+
+# Предопределенный список популярных пар для всех вкладок
+popular_pairs = [
+    "BTCUSDT", "ETHUSDT", "BNBUSDT", "ADAUSDT", "XRPUSDT",
+    "LINKUSDT", "DOTUSDT", "LTCUSDT", "UNIUSDT", "SOLUSDT",
+    "MATICUSDT", "ICXUSDT", "VETUSDT", "XLMUSDT", "TRXUSDT"
+]
+
+# Вкладка 1: Список пар
+with tab1:
+    st.header("Список торговых пар")
     
-    # Отображаем прогресс
-    progress_text = "Анализ торговых пар. Пожалуйста, подождите..."
-    progress_bar = st.progress(0, text=progress_text)
+    if start_analysis:
+        st.subheader("Результаты анализа появятся здесь после запуска")
+        
+    st.subheader("Доступные пары для анализа")
+    pairs_df = pd.DataFrame({
+        'Символ': popular_pairs[:max_pairs],
+        'Описание': [f"Торговая пара {pair}" for pair in popular_pairs[:max_pairs]]
+    })
     
-    # Создаем контейнер для логов
-    log_container = st.empty()
-    log_container.info("Инициализация процесса анализа...")
+    st.dataframe(pairs_df, use_container_width=True)
+    st.success(f"Всего пар: {len(popular_pairs[:max_pairs])}")
+
+# Вкладка 2: Информация
+with tab2:
+    st.header("Информация о системе")
     
-    try:
-        # Инициализация классов
-        collector = BinanceDataCollector(api_key, api_secret)
-        processor = DataProcessor(collector)
-        correlation_analyzer = CorrelationAnalyzer(collector)
-        portfolio_builder = PortfolioBuilder(collector, correlation_analyzer)
+    st.subheader("Реальные комиссии Binance")
+    st.write(f"**Maker:** {MAKER_COMMISSION_RATE*100:.3f}%")
+    st.write(f"**Taker:** {TAKER_COMMISSION_RATE*100:.3f}%")
+    
+    st.subheader("Возможности системы")
+    st.write("✅ Анализ торговых пар")
+    st.write("✅ Симуляция Grid Trading с реальными комиссиями") 
+    st.write("✅ Часовые и дневные данные")
+    st.write("✅ Различные стратегии стоп-лосса")
+
+# Вкладка 3: Настройки
+with tab3:
+    st.header("Настройки анализа")
+    
+    st.subheader("Текущие параметры")
+    st.write(f"Минимальный объем: ${min_volume:,}")
+    st.write(f"Диапазон цен: ${min_price:.4f} - ${max_price:.2f}")
+    st.write(f"Максимум пар: {max_pairs}")
+    st.write(f"Диапазон сетки: {grid_range_pct}%")
+    st.write(f"Шаг сетки: {grid_step_pct}%")
+
+# Вкладка 4: Графики
+with tab4:
+    st.header("Графики цен")
+    
+    selected_symbol = st.selectbox("Выберите актив для просмотра", popular_pairs, key="chart_symbol")
+    
+    if selected_symbol and api_key and api_secret:
+        try:
+            collector = BinanceDataCollector(api_key, api_secret)
+            df = collector.get_historical_data(selected_symbol, "1d", 90)
+            if not df.empty:
+                # График цены
+                fig, ax = plt.subplots(figsize=(12, 6))
+                ax.plot(df.index, df['close'], linewidth=2)
+                ax.set_title(f"График цены {selected_symbol} за последние 90 дней")
+                ax.set_xlabel("Дата")
+                ax.set_ylabel("Цена (USDT)")
+                ax.grid(True, alpha=0.3)
+                st.pyplot(fig)
+                
+                # Базовая статистика
+                st.subheader(f"Статистика {selected_symbol}")
+                st.write(f"Текущая цена: ${df['close'].iloc[-1]:.6f}")
+                st.write(f"Максимум за период: ${df['high'].max():.6f}")
+                st.write(f"Минимум за период: ${df['low'].min():.6f}")
+                price_change = ((df['close'].iloc[-1] / df['close'].iloc[0]) - 1) * 100
+                st.write(f"Изменение за период: {price_change:.2f}%")
+            else:
+                st.warning("Данные для выбранной пары недоступны.")
+        except Exception as e:
+            st.error(f"Ошибка при получении данных: {str(e)}")
+    elif not api_key or not api_secret:
+        st.warning("Введите API ключи в боковой панели для просмотра графиков")
+
+# Вкладка 5: Grid Trading (всегда доступна)
+with tab5:
+    st.header("Grid Trading Симуляция")
+    st.write("Тестирование симуляции двойных сеток с реальными комиссиями Binance")
+    
+    # Пояснение по расчету доходности
+    st.info("💡 **Расчет доходности:** Все проценты рассчитываются от начального капитала (100%). "
+            "При стоп-лоссе убыток вычитается от текущего общего капитала.")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("Реальные комиссии Binance")
+        st.write(f"**Maker:** {MAKER_COMMISSION_RATE*100:.3f}%")
+        st.write(f"**Taker:** {TAKER_COMMISSION_RATE*100:.3f}%")
         
-        # Тестовый запрос для проверки подключения к API
-        log_container.info("Проверка подключения к Binance API...")
-        status = collector.client.get_system_status()
-        log_container.success(f"Подключение к Binance API успешно установлено! Статус: {status['msg']}")
+        st.subheader("Параметры симуляции")
+        grid_symbol = st.selectbox("Выберите пару для симуляции", popular_pairs, key="grid_symbol")
+        grid_step = st.slider("Шаг сетки (%)", 0.1, 2.0, 0.5, 0.1, key="grid_step")
+        grid_range = st.slider("Диапазон сетки (%)", 5.0, 50.0, 20.0, 1.0, key="grid_range")
+        stop_loss = st.slider("Стоп-лосс (%)", 1.0, 10.0, 5.0, 0.5, key="stop_loss")
+        stop_loss_coverage = st.slider("Покрытие убытков", 0.0, 1.0, 0.5, 0.1, key="stop_loss_coverage")
         
-        # Сохраняем API ключи, если они успешно работают и еще не сохранены
-        saved_api_key, saved_api_secret = load_api_keys()
-        if (not saved_api_key or not saved_api_secret) and api_key and api_secret:
-            save_api_keys(api_key, api_secret)
-            log_container.success("API ключи автоматически сохранены для будущего использования")
-        
-        # Шаг 1: Получение и анализ пар
-        progress_bar.progress(10, text="Получение списка пар...")
-        log_container.info("Получение списка всех торговых пар с Binance...")
-        all_pairs = collector.get_all_usdt_pairs()
-        log_container.info(f"Найдено {len(all_pairs)} торговых пар с USDT")
-        
-        progress_bar.progress(20, text="Фильтрация пар по возрасту...")
-        log_container.info("Фильтрация пар по возрасту (не менее 1 года)...")
-        
-        # Анализируем пары
-        log_container.info("Анализ торговых пар...")
-        analyzed = processor.analyze_all_pairs(
-            min_age_days=min_age_days,
-            min_volatility=min_volatility,
-            max_range_percent=max_range_percent
+        stop_loss_strategy = st.selectbox(
+            "Стратегия стоп-лосса",
+            ["independent", "close_both"],
+            help="independent: сетки работают независимо, close_both: при стоп-лоссе одной закрываются обе",
+            key="stop_loss_strategy"
         )
         
-        if analyzed.empty:
-            log_container.warning("Не найдено подходящих пар.")
-            st.warning("Не найдено подходящих пар. Попробуйте изменить параметры.")
+    with col2:
+        timeframe_choice = st.selectbox(
+            "Таймфрейм для симуляции",
+            ["1h", "1d"],
+            index=0,  # По умолчанию часовые данные
+            help="Часовые данные дают более точные результаты для прибыльности",
+            key="timeframe_choice"
+        )
+        
+        period_days = st.slider("Период тестирования (дней)", 7, 90, 30, 1, key="period_days")        
+        if st.button("Запустить симуляцию Grid Trading", key="run_grid_simulation"):
+            if not api_key or not api_secret:
+                st.error("Введите API ключи для запуска симуляции")
+            else:
+                try:
+                    # Создаем экземпляры классов
+                    collector = BinanceDataCollector(api_key, api_secret)
+                    grid_analyzer = GridAnalyzer(collector)
+                    
+                    # Получаем данные для симуляции
+                    with st.spinner("Загружаем данные для симуляции..."):
+                        if timeframe_choice == "1h":
+                            df = collector.get_historical_data(grid_symbol, "1h", period_days * 24)
+                        else:
+                            df = collector.get_historical_data(grid_symbol, "1d", period_days)
+                        
+                    if df.empty:
+                        st.error(f"Нет данных для пары {grid_symbol}")
+                    else:
+                        with st.spinner("Выполняем симуляцию..."):
+                            # Симуляция только с реальными комиссиями
+                            result = grid_analyzer.estimate_dual_grid_by_candles(
+                                df,
+                                grid_range_pct=grid_range,
+                                grid_step_pct=grid_step,
+                                use_real_commissions=True,  # Всегда используем реальные комиссии
+                                stop_loss_pct=stop_loss,
+                                stop_loss_coverage=stop_loss_coverage,
+                                stop_loss_strategy=stop_loss_strategy,
+                                close_both_on_stop_loss=(stop_loss_strategy == "close_both")
+                            )
+                        
+                        # Отображаем результаты
+                        st.success("Симуляция завершена!")
+                        
+                        st.subheader("Результаты симуляции с реальными комиссиями Binance")
+                        
+                        # Основная информация
+                        col_a, col_b, col_c = st.columns(3)
+                        
+                        with col_a:
+                            st.metric(
+                                "Общая доходность",
+                                f"{result['combined_pct']:.2f}%",
+                                delta=None
+                            )
+                            st.metric(
+                                "Всего сделок",
+                                result['total_trades']
+                            )
+                        with col_b:
+                            st.metric(
+                                "Long доходность",
+                                f"{result['long_pct']:.2f}%"
+                            )
+                            st.metric(
+                                "Молний",
+                                result['lightning_count']
+                            )
+                        
+                        with col_c:
+                            st.metric(
+                                "Short доходность",
+                                f"{result['short_pct']:.2f}%"
+                            )
+                            st.metric(
+                                "Стоп-лоссов",
+                                result['stop_loss_count']
+                            )
+                        
+                        # Детальная таблица
+                        st.subheader("Детальная статистика")
+                        results_df = pd.DataFrame({
+                            'Метрика': [
+                                'Общая доходность (%)',
+                                'Long доходность (%)',
+                                'Short доходность (%)',
+                                'Всего сделок',
+                                'Молний',
+                                'Стоп-лоссов',
+                                'Long активна',
+                                'Short активна',
+                                'Шаг сетки (%)',
+                                'Таймфрейм',
+                                'Период (дней)'
+                            ],
+                            'Значение': [
+                                f"{result['combined_pct']:.2f}",
+                                f"{result['long_pct']:.2f}",
+                                f"{result['short_pct']:.2f}",
+                                str(result['total_trades']),
+                                str(result['lightning_count']),
+                                str(result['stop_loss_count']),
+                                "Да" if result['long_active'] else "Нет",
+                                "Да" if result['short_active'] else "Нет",
+                                f"{result['grid_step_pct']:.2f}",
+                                str(timeframe_choice),
+                                str(period_days)
+                            ]})
+                        
+                        st.dataframe(results_df, use_container_width=True)
+                        
+                        # Информация о комиссиях
+                        st.subheader("Информация о комиссиях")
+                        
+                        # Рассчитываем общую уплаченную комиссию
+                        total_maker = result['long_maker_trades'] + result['short_maker_trades']
+                        total_taker = result['long_taker_trades'] + result['short_taker_trades']
+                        
+                        # Приблизительная оценка общей комиссии
+                        total_commission_cost = (total_maker * MAKER_COMMISSION_RATE + total_taker * TAKER_COMMISSION_RATE) * 100
+                        
+                        st.metric("Общая комиссия уплачена", f"{total_commission_cost:.3f}%")
+                        st.caption("Комиссия рассчитана от каждой сделки: Maker 0.02%, Taker 0.05%")
+                        
+                        # Рекомендации
+                        st.subheader("Выводы и рекомендации")
+                        if timeframe_choice == "1h":
+                            st.success("✅ Используются часовые данные - максимальная точность симуляции")
+                        else:
+                            st.info("ℹ️ Для более точных результатов рекомендуются часовые данные")
+                            
+                        if result['combined_pct'] > 0:
+                            st.success(f"✅ Стратегия прибыльна: {result['combined_pct']:.2f}%")
+                        else:
+                            st.warning(f"⚠️ Стратегия убыточна: {result['combined_pct']:.2f}%")
+                            
+                        st.info("💡 Все расчеты выполнены с учетом реальных комиссий Binance")
+                        
+                except Exception as e:
+                    st.error(f"Ошибка при выполнении симуляции: {str(e)}")
+
+
+def run_analysis():
+    """Основная функция анализа"""
+    try:
+        if not api_key or not api_secret:
+            st.error("Пожалуйста, введите API ключи Binance")
             return
         
-        log_container.success(f"Найдено {len(analyzed)} подходящих пар!")
-        
-        progress_bar.progress(40, text="Ранжирование пар...")
-        log_container.info("Ранжирование пар по заданным критериям...")
-        
-        # Ранжируем пары
-        ranked = processor.rank_pairs(
-            volatility_weight=volatility_weight,
-            sideways_weight=sideways_weight
-        )
-        
-        # Выбираем топ-10 пар для дальнейшего анализа
-        top_pairs = processor.get_top_pairs(10)
-        symbols = top_pairs['symbol'].tolist()
-        
-        log_container.success(f"Топ пары: {', '.join(symbols)}")
-        
-        progress_bar.progress(60, text="Расчет корреляций...")
-        log_container.info("Сбор данных о ценах для корреляционного анализа...")
-          # Собираем данные о ценах для корреляционного анализа
-        price_data = correlation_analyzer.collect_price_data(symbols, days=min_age_days)
-        
-        log_container.info("Расчет матрицы корреляций...")
-        # Рассчитываем матрицу корреляций
-        correlation = correlation_analyzer.calculate_correlation(method=correlation_method)
-        
-        log_container.info("Поиск наименее коррелированных пар...")
-        # Находим наименее коррелированные пары
-        least_correlated = correlation_analyzer.find_least_correlated_pairs(
-            threshold=correlation_threshold,
-            min_pairs=5
-        )
-        
-        if len(least_correlated) < 2:
-            log_container.warning(f"Найдено недостаточно некоррелированных пар: {len(least_correlated)}. Необходимо минимум 2.")
-            log_container.info("Используем топ пары для формирования портфеля...")
-            # Если найдено меньше 2 пар, используем топовые пары для портфеля
-            least_correlated = symbols[:min(5, len(symbols))]
-        
-        log_container.success(f"Наименее коррелированные пары: {', '.join(least_correlated)}")
-        
-        progress_bar.progress(80, text="Формирование оптимального портфеля...")
-        log_container.info("Формирование оптимального портфеля...")
-        
-        # Устанавливаем символы для портфеля
-        portfolio_builder.set_portfolio_symbols(least_correlated)
-        
-        # Строим оптимальный портфель
-        portfolio_stats = portfolio_builder.build_optimal_portfolio(
-            optimization_goal=optimization_goal,
-            risk_free_rate=risk_free_rate
-        )
-        
-        progress_bar.progress(100, text="Анализ завершен!")
-        log_container.success("Анализ успешно завершен!")
-        time.sleep(1)
-        progress_bar.empty()
-        log_container.empty()
-        
-        # Отображаем результаты
-        with tab1:
-            st.header("Рейтинг торговых пар")
-            st.dataframe(
-                ranked[['symbol', 'avg_daily_volatility', 'price_range_percent', 'is_sideways', 'total_score']]
-                .rename(columns={
-                    'symbol': 'Символ',
-                    'avg_daily_volatility': 'Средняя волатильность (%)',
-                    'price_range_percent': 'Диапазон цены (%)',
-                    'is_sideways': 'В боковике',
-                    'total_score': 'Итоговый рейтинг'
-                })
-                .style.format({
-                    'Средняя волатильность (%)': '{:.2f}',
-                    'Диапазон цены (%)': '{:.2f}',
-                    'Итоговый рейтинг': '{:.4f}'
-                })
-                .background_gradient(subset=['Итоговый рейтинг'], cmap='viridis')
-            )
+        with log_container:
+            st.info("Начинаем анализ торговых пар...")
+            # Инициализация компонентов
+            with st.spinner("Инициализация..."):
+                collector = BinanceDataCollector(api_key, api_secret)
+                grid_analyzer = GridAnalyzer(collector)
             
-        with tab2:
-            st.header("Корреляционная матрица")
-            st.write("Метод расчета корреляции:", correlation_method)
-            
-            # Отображаем матрицу корреляций
-            fig, ax = plt.subplots(figsize=(10, 8))
-            sns.heatmap(correlation, annot=True, cmap='coolwarm', fmt=".2f", linewidths=0.5, ax=ax)
-            ax.set_title(f"Матрица корреляций ({correlation_method})")
-            st.pyplot(fig)
-            
-            st.subheader("Наименее коррелированные пары")
-            st.write(", ".join(least_correlated))
-            
-        with tab3:
-            st.header("Оптимальный портфель")
-            st.write("Цель оптимизации:", optimization_goal)
-            
-            # Отображаем статистику портфеля
-            if portfolio_stats:
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.subheader("Веса в портфеле")
-                    weights_df = pd.DataFrame({
-                        'Символ': portfolio_stats['symbols'],
-                        'Вес (%)': [w * 100 for w in portfolio_stats['weights']]
-                    })
-                    st.dataframe(weights_df.style.format({'Вес (%)': '{:.2f}'}))
-                
-                with col2:
-                    st.subheader("Статистика портфеля")
-                    stats_df = pd.DataFrame({
-                        'Метрика': ['Ожидаемая доходность', 'Волатильность', 'Коэффициент Шарпа'],
-                        'Значение': [
-                            portfolio_stats['expected_return'],
-                            portfolio_stats['volatility'],
-                            portfolio_stats['sharpe_ratio']
-                        ]
-                    })
-                    st.dataframe(stats_df.style.format({'Значение': '{:.4f}'}))
-                  # Отображаем график весов портфеля
-                fig, ax = plt.subplots(figsize=(10, 6))
-                ax.bar(portfolio_stats['symbols'], [w * 100 for w in portfolio_stats['weights']])
-                ax.set_title("Распределение весов в оптимальном портфеле")
-                ax.set_ylabel("Вес (%)")
-                ax.set_xlabel("Символ")
-                plt.xticks(rotation=45)
-                st.pyplot(fig)
-            else:
-                st.warning("Не удалось построить оптимальный портфель.")
-                
-        with tab4:
-            st.header("Графики цен")
-            
-            # Выбор пары для отображения
-            selected_symbol = st.selectbox("Выберите пару для отображения", symbols)
-            
-            if selected_symbol:
-                try:
-                    # Получаем данные для выбранной пары
-                    pair_data = collector.get_historical_data(
-                        selected_symbol, Client.KLINE_INTERVAL_1DAY, days=min_age_days
-                    )
-                    
-                    if not pair_data.empty:
-                        # Строим график цены
-                        fig, ax = plt.subplots(figsize=(12, 6))
-                        ax.plot(pair_data.index, pair_data['close'])
-                        ax.set_title(f"Цена {selected_symbol}")
-                        ax.set_ylabel("Цена")
-                        ax.set_xlabel("Дата")
-                        ax.grid(True)
-                        st.pyplot(fig)
-                        
-                        # Отображаем статистику по паре
-                        stats = next((item for item in ranked.to_dict('records') 
-                                    if item['symbol'] == selected_symbol), None)
-                        
-                        if stats:
-                            st.subheader("Статистика по паре")
-                            st.write(f"Средняя дневная волатильность: {stats['avg_daily_volatility']:.2f}%")
-                            st.write(f"Диапазон цены: {stats['price_range_percent']:.2f}%")
-                            st.write(f"В боковике: {'Да' if stats['is_sideways'] else 'Нет'}")
-                            st.write(f"Итоговый рейтинг: {stats['total_score']:.4f}")
-                    else:
-                        st.warning("Данные для выбранной пары недоступны.")
-                except Exception as e:
-                    st.error(f"Ошибка при получении данных: {str(e)}")
-    
+            # Получение списка популярных пар
+            with st.spinner("Получение списка торговых пар..."):
+                pairs = popular_pairs[:max_pairs]
+                st.success(f"Выбрано {len(pairs)} торговых пар для анализа")
+
     except Exception as e:
         log_container.error(f"Произошла ошибка: {str(e)}")
         st.error(f"Произошла ошибка: {str(e)}")
         return
 
-# Запускаем анализ при нажатии кнопки
+# Запускаем анализ при нажатии кнопки (только для первой вкладки)
 if start_analysis:
     run_analysis()
-else:
-    # Отображаем инструкции
-    st.info(
-        """
-        ### Инструкция по использованию
-        
-        1. Введите свои API ключи Binance в боковой панели
-        2. Настройте параметры анализа по желанию
-        3. Нажмите кнопку "Запустить анализ"
-        4. Просмотрите результаты на соответствующих вкладках
-        
-        Результаты анализа включают:
-        - Рейтинг торговых пар по заданным критериям
-        - Матрицу корреляций между топ-парами
-        - Оптимальный портфель с минимальной корреляцией между активами
-        - Графики цен выбранных пар
-        """
-    )
 
+# Инструкции (показываем всегда в нижней части)
+st.markdown("---")
+st.info(
+    """
+    ### 💡 Инструкция по использованию
+    
+    **Grid Trading всегда доступен на вкладке ⚡ Grid Trading**
+    
+    1. Введите свои API ключи Binance в боковой панели
+    2. Перейдите на вкладку "⚡ Grid Trading"
+    3. Выберите пару, настройте параметры и запустите симуляцию
+    4. Для графиков используйте вкладку "📈 Графики"
+    
+    **Особенности:**
+    - Все расчеты с реальными комиссиями Binance (Maker 0.02%, Taker 0.05%)
+    - Часовые данные для максимальной точности
+    - Различные стратегии стоп-лосса
+    """
+)
 
 # Футер
-st.markdown("---")
 st.caption("© 2025 Анализатор торговых пар Binance")

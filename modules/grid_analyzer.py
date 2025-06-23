@@ -10,23 +10,10 @@ from datetime import datetime, timedelta
 from binance.client import Client
 import sys
 import os
-import logging
-
-# Настройка логирования
-logging.basicConfig(level=logging.INFO,
-                   format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
 
 # Добавляем родительский каталог в путь для импорта
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from modules.collector import BinanceDataCollector
-
-# Реальные комиссии Binance
-MAKER_COMMISSION_RATE = 0.0002  # 0.02% (для лимитных ордеров)
-TAKER_COMMISSION_RATE = 0.0005  # 0.05% (для рыночных ордеров)
-
-# Базовый капитал для расчетов
-INITIAL_CAPITAL = 1000.0  # $1000 базовый капитал
 
 
 class GridAnalyzer:
@@ -45,11 +32,6 @@ class GridAnalyzer:
         self.client = collector.client
         self.pairs_analysis = {}
         
-        # Добавляем отслеживание текущего капитала
-        self.current_capital = INITIAL_CAPITAL
-        self.total_long_capital = 0
-        self.total_short_capital = 0
-    
     def calculate_atr(self, df: pd.DataFrame, period: int = 14) -> float:
         """
         Расчет Average True Range (ATR) для определения волатильности.
@@ -142,7 +124,7 @@ class GridAnalyzer:
                                    symbol: str,
                                    grid_range_pct: float = 20.0, 
                                    grid_step_pct: float = 1.0,
-                                   use_real_commissions: bool = True) -> Dict[str, Any]:
+                                   commission_pct: float = 0.1) -> Dict[str, Any]:
         """
         Оценка потенциальной доходности сеточной стратегии на паре.
         
@@ -151,7 +133,7 @@ class GridAnalyzer:
             symbol: Торговая пара
             grid_range_pct: Диапазон сетки в процентах (±range/2 от текущей цены)
             grid_step_pct: Шаг сетки в процентах
-            use_real_commissions: Использовать ли реальные комиссии Binance
+            commission_pct: Комиссия биржи в процентах
             
         Returns:
             Словарь с оценкой доходности и параметрами сетки
@@ -170,14 +152,7 @@ class GridAnalyzer:
         expected_daily_trades = avg_daily_range_pct / grid_step_pct
         expected_monthly_trades = expected_daily_trades * 30
         
-        # Потенциальная доходность с учетом реальных комиссий
-        if use_real_commissions:
-            # В среднем половина сделок - maker, половина - taker
-            avg_commission_rate = (MAKER_COMMISSION_RATE + TAKER_COMMISSION_RATE) / 2
-            commission_pct = avg_commission_rate * 100
-        else:
-            commission_pct = 0.1  # Старая логика
-            
+        # Потенциальная доходность за 30 дней (с учетом комиссий)
         profit_per_trade_pct = grid_step_pct - commission_pct
         potential_monthly_profit_pct = expected_monthly_trades * profit_per_trade_pct
         
@@ -209,262 +184,11 @@ class GridAnalyzer:
             'expected_daily_trades': expected_daily_trades,
             'expected_monthly_trades': expected_monthly_trades,
             'potential_monthly_profit_pct': potential_monthly_profit_pct,
-            'commission_pct': commission_pct,
             'price_spikes_count': spikes,
             'price_spikes_per_month': spikes_per_month,
             'liquidity_5pct': liquidity['total_volume_5pct'],
             'risk_level_text': risk_level_text,
             'attractiveness_text': attractiveness_text
-        }
-    
-    def estimate_dual_grid_by_candles(self,
-                                     df: pd.DataFrame,
-                                     grid_range_pct: float = 20.0,
-                                     grid_step_pct: float = 1.0,
-                                     use_real_commissions: bool = True,
-                                     stop_loss_pct: float = 5.0,
-                                     stop_loss_coverage: float = 0.5,
-                                     stop_loss_strategy: str = "independent",
-                                     close_both_on_stop_loss: bool = False) -> Dict[str, Any]:
-        """
-        Улучшенная симуляция двойных сеток с учетом реальных комиссий, 
-        молний, стоп-лоссов и покрытия убытков.
-        
-        Args:
-            df: DataFrame с историческими данными (OHLC)
-            grid_range_pct: Диапазон сетки в процентах
-            grid_step_pct: Шаг сетки в процентах
-            use_real_commissions: Использовать ли реальные комиссии Binance
-            stop_loss_pct: Размер стоп-лосса в процентах
-            stop_loss_coverage: Доля покрытия убытков между сетками (0.0-1.0)
-            stop_loss_strategy: Стратегия стоп-лосса ("independent" или "close_both")
-            close_both_on_stop_loss: Закрывать ли обе сетки при стоп-лоссе одной
-            
-        Returns:
-            Словарь с подробными результатами симуляции
-        """
-        # Определяем комиссии
-        if use_real_commissions:
-            maker_commission = MAKER_COMMISSION_RATE * 100  # В процентах
-            taker_commission = TAKER_COMMISSION_RATE * 100  # В процентах
-        else:
-            maker_commission = 0.05  # Старая логика
-            taker_commission = 0.1   # Старая логика
-        
-        # Инициализация переменных
-        total_long_pnl = 0.0
-        total_short_pnl = 0.0
-        lightning_count = 0
-        stop_loss_count = 0
-        daily_range_coverage = 0.0
-        long_active = True
-        short_active = True
-        
-        # Статистика по сделкам
-        long_trades = 0
-        short_trades = 0
-        long_maker_trades = 0
-        short_maker_trades = 0
-        long_taker_trades = 0
-        short_taker_trades = 0
-          # Используем шаг сетки, заданный пользователем
-        effective_grid_step = grid_step_pct
-        
-        print(f"Используемый шаг сетки: {effective_grid_step:.2f}%")
-        print(f"Комиссии: Maker {maker_commission:.3f}%, Taker {taker_commission:.3f}%")
-        
-        for i, (_, row) in enumerate(df.iterrows()):
-            open_p, high_p, low_p, close_p = row['open'], row['high'], row['low'], row['close']
-            
-            # Расчет дневного диапазона
-            daily_range_pct = (high_p - low_p) / low_p * 100
-            daily_range_coverage += min(daily_range_pct / effective_grid_step, grid_range_pct / effective_grid_step)            # Проверка на молнию (резкое движение > 15%)
-            if daily_range_pct > 15.0:
-                lightning_count += 1
-                # ИСПРАВЛЕНИЕ: Молния влияет на весь капитал
-                # Рассчитываем текущий общий капитал
-                current_total_capital = 100 + total_long_pnl + total_short_pnl  # 100% - начальный капитал
-                
-                # Убыток от молнии = процент от текущего капитала
-                lightning_loss_pct = min(daily_range_pct * 0.3, 10.0)  # 30% от размера движения, но не более 10%
-                lightning_loss_amount = current_total_capital * (lightning_loss_pct / 100)
-                
-                # Распределяем убыток между активными сетками
-                active_grids = (1 if long_active else 0) + (1 if short_active else 0)
-                if active_grids > 0:
-                    loss_per_grid = lightning_loss_amount / active_grids
-                    if long_active:
-                        total_long_pnl -= loss_per_grid
-                    if short_active:
-                        total_short_pnl -= loss_per_grid
-                
-                print(f"Молния в день {i+1}: диапазон {daily_range_pct:.2f}%")
-                print(f"Текущий капитал: {current_total_capital:.2f}%, убыток от молнии: -{lightning_loss_amount:.2f}%")
-                continue
-            
-            # Расчет компонентов свечи
-            base_price = min(open_p, close_p)
-            body_pct = abs(close_p - open_p) / base_price * 100
-            upper_wick_pct = (high_p - max(open_p, close_p)) / base_price * 100
-            lower_wick_pct = (min(open_p, close_p) - low_p) / base_price * 100
-            
-            # Определяем направление свечи
-            is_red_candle = close_p < open_p
-            is_green_candle = close_p > open_p
-              # Расчет количества сделок в тенях (maker ордера)
-            upper_wick_trades = int(upper_wick_pct / effective_grid_step)
-            lower_wick_trades = int(lower_wick_pct / effective_grid_step)
-            body_trades = int(body_pct / effective_grid_step)
-            
-            # ИСПРАВЛЕНИЕ: Добавляем коэффициент реализма 
-            # Не все движения в тенях приводят к сделкам из-за ликвидности и проскальзывания
-            wick_efficiency = 0.75  # 75% эффективность исполнения ордеров
-            
-            # Обработка сделок Long сетки (если активна)
-            if long_active:
-                # Профит от теней (maker ордера) с коэффициентом реализма
-                effective_wick_trades = (upper_wick_trades + lower_wick_trades) * wick_efficiency
-                long_wick_profit = effective_wick_trades * (effective_grid_step - maker_commission)
-                  # Расчет текущего капитала до стоп-лосса
-                current_capital = self._calculate_current_capital("both")
-                
-                # Проверяем стоп-лосс
-                if is_red_candle and body_pct > stop_loss_pct:
-                    stop_loss_count += 1
-                    
-                    # Рассчитываем текущий капитал и убыток
-                    current_total_capital = self._calculate_current_capital("both")
-                    loss_amount = self._calculate_stop_loss_impact(body_pct, current_total_capital)
-                    
-                    # Обновляем капитал после стоп-лосса
-                    if stop_loss_strategy == "independent":
-                        # При независимой стратегии убыток только по Long позиции
-                        self._update_capital_after_stop_loss(loss_amount, "long")
-                        total_long_pnl -= loss_amount
-                    else:
-                        # При стратегии close_both убыток распределяется на обе позиции
-                        self._update_capital_after_stop_loss(loss_amount, "both")
-                        total_long_pnl -= loss_amount / 2
-                        total_short_pnl -= loss_amount / 2
-                        
-                    print(f"Сработал стоп-лосс (Long): Текущий капитал: {current_total_capital:.2f}, убыток: -{loss_amount:.2f}")
-                else:
-                    # Обычная торговля без стоп-лосса
-                    long_body_loss = 0
-                    if is_red_candle and body_trades > 0:
-                        long_body_loss = body_trades * taker_commission
-                    
-                    long_daily_pnl = long_wick_profit - long_body_loss
-                    total_long_pnl += long_daily_pnl
-                
-                # Подсчет сделок (фактических)
-                long_maker_trades += effective_wick_trades
-                if is_red_candle and body_trades > 0:
-                    long_taker_trades += body_trades                # Проверка стоп-лосса Long сетки
-                if is_red_candle and body_pct > stop_loss_pct:
-                    stop_loss_count += 1
-                    # ИСПРАВЛЕНИЕ: Стоп-лосс влияет на весь капитал
-                    # Рассчитываем текущий общий капитал (начальный + накопленная прибыль)
-                    current_total_capital = 100 + total_long_pnl + total_short_pnl  # 100% - начальный капитал
-                    
-                    # Убыток от стоп-лосса = процент падения от текущего капитала
-                    stop_loss_amount = current_total_capital * (body_pct / 100)
-                    
-                    # Вычитаем убыток из общего капитала (пропорционально между сетками)
-                    long_loss = stop_loss_amount * 0.5  # 50% убытка на Long сетку
-                    short_loss = stop_loss_amount * 0.5  # 50% убытка на Short сетку
-                    
-                    total_long_pnl -= long_loss
-                    total_short_pnl -= short_loss
-                    
-                    print(f"Стоп-лосс Long сетки в день {i+1}: падение {body_pct:.2f}%")
-                    print(f"Текущий капитал: {current_total_capital:.2f}%, убыток: -{stop_loss_amount:.2f}%")
-                    print(f"Потери: Long -{long_loss:.2f}%, Short -{short_loss:.2f}%")
-                    
-                    if stop_loss_strategy == "close_both" or close_both_on_stop_loss:
-                        long_active = False
-                        short_active = False
-                        print("Обе сетки закрыты по стоп-лоссу")
-                        break
-                    else:
-                        print(f"Long сетка продолжает работу после стоп-лосса")
-              # Обработка сделок Short сетки (если активна)
-            if short_active:
-                # Профит от теней (maker ордера) с коэффициентом реализма
-                effective_wick_trades = (upper_wick_trades + lower_wick_trades) * wick_efficiency
-                short_wick_profit = effective_wick_trades * (effective_grid_step - maker_commission)
-                
-                # Убыток от тела при росте (taker ордера при стоп-лоссе)
-                short_body_loss = 0
-                if is_green_candle and body_trades > 0:
-                    short_body_loss = body_trades * taker_commission  # Только комиссия, убыток покрывается
-                
-                short_daily_pnl = short_wick_profit - short_body_loss
-                total_short_pnl += short_daily_pnl
-                
-                # Подсчет сделок (фактических)
-                short_maker_trades += effective_wick_trades
-                if is_green_candle and body_trades > 0:
-                    short_taker_trades += body_trades                # Проверка стоп-лосса Short сетки
-                if is_green_candle and body_pct > stop_loss_pct:
-                    stop_loss_count += 1
-                    # ИСПРАВЛЕНИЕ: Стоп-лосс влияет на весь капитал
-                    # Рассчитываем текущий общий капитал (начальный + накопленная прибыль)
-                    current_total_capital = 100 + total_long_pnl + total_short_pnl  # 100% - начальный капитал
-                    
-                    # Убыток от стоп-лосса = процент роста от текущего капитала
-                    stop_loss_amount = current_total_capital * (body_pct / 100)
-                    
-                    # Вычитаем убыток из общего капитала (пропорционально между сетками)
-                    long_loss = stop_loss_amount * 0.5  # 50% убытка на Long сетку
-                    short_loss = stop_loss_amount * 0.5  # 50% убытка на Short сетку
-                    
-                    total_long_pnl -= long_loss
-                    total_short_pnl -= short_loss
-                    
-                    print(f"Стоп-лосс Short сетки в день {i+1}: рост {body_pct:.2f}%")
-                    print(f"Текущий капитал: {current_total_capital:.2f}%, убыток: -{stop_loss_amount:.2f}%")
-                    print(f"Потери: Long -{long_loss:.2f}%, Short -{short_loss:.2f}%")
-                    
-                    if stop_loss_strategy == "close_both" or close_both_on_stop_loss:
-                        long_active = False
-                        short_active = False
-                        print("Обе сетки закрыты по стоп-лоссу")
-                        break
-                    else:
-                        print(f"Short сетка продолжает работу после стоп-лосса")
-            
-            # Если обе сетки неактивны, прерываем симуляцию
-            if not long_active and not short_active:
-                break
-        
-        # Расчет итоговых метрик
-        total_trades = long_maker_trades + long_taker_trades + short_maker_trades + short_taker_trades
-        combined_pnl = total_long_pnl + total_short_pnl
-        
-        # Среднее покрытие дневных колебаний
-        avg_daily_coverage = daily_range_coverage / len(df) if len(df) > 0 else 0
-        
-        return {
-            'combined_pct': combined_pnl,
-            'long_pct': total_long_pnl,
-            'short_pct': total_short_pnl,
-            'lightning_count': lightning_count,
-            'stop_loss_count': stop_loss_count,
-            'long_active': long_active,
-            'short_active': short_active,
-            'strategy': stop_loss_strategy,
-            'grid_step_pct': effective_grid_step,
-            'avg_daily_coverage_pct': avg_daily_coverage,
-            'total_trades': total_trades,
-            'long_maker_trades': long_maker_trades,
-            'long_taker_trades': long_taker_trades,
-            'short_maker_trades': short_maker_trades,
-            'short_taker_trades': short_taker_trades,
-            'maker_commission_pct': maker_commission,
-            'taker_commission_pct': taker_commission,
-            'stop_loss_pct': stop_loss_pct,
-            'stop_loss_coverage': stop_loss_coverage
         }
     
     def analyze_pair_for_grid(self, 
@@ -553,8 +277,7 @@ class GridAnalyzer:
         # Создаем DataFrame из результатов
         if results:
             df_results = pd.DataFrame(results)
-            
-            # Сортируем по соотношению доходность/риск (привлекательности)
+              # Сортируем по соотношению доходность/риск (привлекательности)
             attractiveness_map = {'высокая': 3, 'средняя': 2, 'низкая': 1}
             df_results['attractiveness_score'] = df_results['attractiveness_text'].map(attractiveness_map)
             df_results.sort_values(by=['attractiveness_score', 'potential_monthly_profit_pct'], 
@@ -577,217 +300,188 @@ class GridAnalyzer:
         Returns:
             DataFrame с лучшими парами для сеточной торговли
         """
-        results_df = self.analyze_pairs_batch(symbols)
-        
+        results_df = self.analyze_pairs_batch(symbols)        
         if not results_df.empty:
             # Возвращаем top_n пар с лучшим соотношением доходность/риск
             return results_df.head(top_n)
         return pd.DataFrame()
-
-    def _calculate_current_capital(self, position_type: str = "both") -> float:
-        """
-        Расчет текущего капитала с учетом типа позиции.
-        
-        Args:
-            position_type: Тип позиции ("long", "short" или "both")
-            
-        Returns:
-            Текущий капитал в долларах
-        """
-        if position_type == "long":
-            return self.total_long_capital
-        elif position_type == "short":
-            return self.total_short_capital
-        else:
-            return self.total_long_capital + self.total_short_capital
     
-    def _calculate_stop_loss_impact(self, price_change_pct: float, current_capital: float) -> float:
+    def estimate_dual_grid_by_candles(self,
+                                     df: pd.DataFrame,
+                                     grid_range_pct: float = 20.0,
+                                     grid_step_pct: float = 1.0,
+                                     commission_pct: float = 0.1,
+                                     stop_loss_pct: float = 5.0,
+                                     lightning_compensation: float = 30.0) -> Dict[str, Any]:
         """
-        Расчет влияния стоп-лосса на капитал.
+        Приближённая симуляция двух сеток (long + short) по дневным свечам.
+        Учёт проторговок тенями и убытков телами свечей, а также выхода за пределы сетки.
+        Детальное отслеживание убытков по стоп-лоссу и молниям с компенсацией.
+        """
+        total_long = 0.0
+        total_short = 0.0
+        breaks = 0
         
-        Args:
-            price_change_pct: Процентное изменение цены
-            current_capital: Текущий капитал
-            
-        Returns:
-            Убыток в процентах от текущего капитала
-        """
-        # Убыток считается как процент от текущего капитала
-        loss_amount = current_capital * (price_change_pct / 100)
-        return loss_amount
-    
-    def _update_capital_after_stop_loss(self, loss_amount: float, position_type: str = "both") -> None:
-        """
-        Обновление капитала после срабатывания стоп-лосса.
-        
-        Args:
-            loss_amount: Сумма убытка
-            position_type: Тип позиции ("long", "short" или "both")
-        """
-        if position_type in ["both", "long"]:
-            self.total_long_capital = max(0, self.total_long_capital - loss_amount / 2)
-        if position_type in ["both", "short"]:
-            self.total_short_capital = max(0, self.total_short_capital - loss_amount / 2)
-        
-        # Обновляем общий капитал
-        self.current_capital = self.total_long_capital + self.total_short_capital
-
-    def analyze_pair(self, df: pd.DataFrame) -> Dict[str, Any]:
-        """
-        Анализирует торговую пару и возвращает ее характеристики.
-        
-        Args:
-            df: DataFrame с историческими данными (OHLC)
-            
-        Returns:
-            Словарь с результатами анализа
-        """
-        try:
-            # Базовые метрики
-            latest_close = df['close'].iloc[-1]
-            volume_24h = df['volume'].iloc[-1]
-            
-            # Расчет волатильности (ATR)
-            volatility = self.calculate_atr(df)
-            
-            # Диапазон цены
-            price_range = (df['high'].max() - df['low'].min()) / df['low'].min() * 100
-            
-            # Проверка на боковое движение
-            is_sideways = self._is_sideways_market(df)
-            
-            # Подсчет резких движений
-            spikes = self.count_price_spikes(df)
-            
-            # Оценка ликвидности
-            liquidity_score = self._calculate_liquidity_score(volume_24h, latest_close)
-            
-            # Итоговый рейтинг
-            total_score = self._calculate_total_score(
-                volatility=volatility,
-                price_range=price_range,
-                is_sideways=is_sideways,
-                spikes=spikes,
-                liquidity=liquidity_score
-            )
-            
-            return {
-                'volatility': volatility,
-                'volume_24h': volume_24h,
-                'price_range_percent': price_range,
-                'is_sideways': is_sideways,
-                'lightning_count': spikes,
-                'liquidity_score': liquidity_score,
-                'total_score': total_score
-            }
-        except Exception as e:
-            print(f"Ошибка при анализе пары: {str(e)}")
-            return {}
-            
-    def _is_sideways_market(self, df: pd.DataFrame, threshold: float = 5.0) -> bool:
-        """
-        Определяет, находится ли рынок в боковом движении.
-        
-        Args:
-            df: DataFrame с историческими данными
-            threshold: Порог изменения цены в процентах
-            
-        Returns:
-            True если рынок в боковике, False иначе
-        """
-        # Расчет общего тренда
-        start_price = df['close'].iloc[0]
-        end_price = df['close'].iloc[-1]
-        total_change = abs((end_price - start_price) / start_price * 100)
-        
-        return total_change <= threshold
-            
-    def _calculate_liquidity_score(self, volume_24h: float, price: float) -> float:
-        """
-        Рассчитывает оценку ликвидности на основе объема торгов.
-        
-        Args:
-            volume_24h: Объем торгов за 24 часа в USDT
-            price: Текущая цена актива
-            
-        Returns:
-            Оценка ликвидности от 0 до 1
-        """
-        # Объем в USDT
-        volume_usdt = volume_24h * price
-        
-        # Базовые пороги
-        min_volume = 1_000_000  # $1M
-        max_volume = 100_000_000  # $100M
-        
-        if volume_usdt <= min_volume:
-            return 0.0
-        elif volume_usdt >= max_volume:
-            return 1.0
-        else:
-            # Логарифмическая шкала для оценки
-            score = (np.log10(volume_usdt) - np.log10(min_volume)) / (np.log10(max_volume) - np.log10(min_volume))
-            return min(max(score, 0.0), 1.0)
-            
-    def _calculate_total_score(self,
-                             volatility: float,
-                             price_range: float,
-                             is_sideways: bool,
-                             spikes: int,
-                             liquidity: float) -> float:
-        """
-        Рассчитывает итоговый рейтинг пары для сеточной торговли.
-        
-        Args:
-            volatility: Значение ATR в процентах
-            price_range: Диапазон цены в процентах
-            is_sideways: Находится ли рынок в боковике
-            spikes: Количество резких движений
-            liquidity: Оценка ликвидности (0-1)
-            
-        Returns:
-            Итоговый рейтинг от 0 до 1
-        """
-        # Веса для разных факторов
-        weights = {
-            'volatility': 0.3,
-            'sideways': 0.2,
-            'spikes': -0.2,  # Негативный вес для резких движений
-            'liquidity': 0.3
+        # Детальная статистика убытков
+        stop_loss_stats = {
+            'long': {'count': 0, 'total_loss': 0.0, 'avg_loss': 0.0},
+            'short': {'count': 0, 'total_loss': 0.0, 'avg_loss': 0.0}
         }
         
-        # Нормализация значений
-        volatility_score = min(volatility / 10.0, 1.0)  # Оптимально 5-10% ATR
-        spikes_score = max(0, 1 - (spikes / 10.0))  # Меньше резких движений лучше
+        lightning_stats = {
+            'long': {'count': 0, 'total_loss': 0.0, 'total_compensation': 0.0, 'net_loss': 0.0},
+            'short': {'count': 0, 'total_loss': 0.0, 'total_compensation': 0.0, 'net_loss': 0.0}
+        }
         
-        # Расчет итогового рейтинга
-        score = (
-            weights['volatility'] * volatility_score +
-            weights['sideways'] * float(is_sideways) +
-            weights['spikes'] * spikes_score +
-            weights['liquidity'] * liquidity
-        )
+        # Расчет шага сетки на основе ATR
+        atr_pct = self.calculate_atr(df)
+        recommended_step = max(atr_pct / 3, 0.5)
+        actual_step = grid_step_pct if grid_step_pct > 0 else recommended_step
         
-        return max(min(score, 1.0), 0.0)
-
-    def _apply_commission(self, amount: float, is_maker: bool = True) -> float:
-        """
-        Применяет комиссию Binance к сумме сделки.
+        # Выводим отладочную информацию
+        print(f"Рекомендуемый шаг сетки: {recommended_step:.2f}%")
+        print(f"Используемый шаг сетки: {actual_step:.2f}%")
         
-        Args:
-            amount: Сумма сделки
-            is_maker: True если это лимитный ордер, False если маркет
+        # Расчет верхней и нижней границ сетки относительно начальной цены
+        initial_price = df.iloc[0]['close']
+        upper_bound = initial_price * (1 + grid_range_pct / 100)
+        lower_bound = initial_price * (1 - grid_range_pct / 100)
+        
+        for i, (_, row) in enumerate(df.iterrows()):
+            open_p, high_p, low_p, close_p = row['open'], row['high'], row['low'], row['close']
+            base = min(open_p, close_p)
             
-        Returns:
-            Сумма с учетом комиссии
-        """
-        commission = MAKER_COMMISSION_RATE if is_maker else TAKER_COMMISSION_RATE
-        return amount * (1 - commission)
-
-
+            # Проверка на выход за пределы сетки (молнии)
+            lightning_triggered = False
+            lightning_loss_long = 0.0
+            lightning_loss_short = 0.0
+            
+            if high_p > upper_bound:
+                lightning_triggered = True
+                lightning_loss_long = (high_p - upper_bound) / upper_bound * 100
+                lightning_stats['long']['count'] += 1
+                lightning_stats['long']['total_loss'] += lightning_loss_long
+                
+                # Применяем компенсацию
+                compensation = lightning_loss_long * (lightning_compensation / 100)
+                lightning_stats['long']['total_compensation'] += compensation
+                lightning_stats['long']['net_loss'] += lightning_loss_long - compensation
+                
+            if low_p < lower_bound:
+                lightning_triggered = True
+                lightning_loss_short = (lower_bound - low_p) / lower_bound * 100
+                lightning_stats['short']['count'] += 1
+                lightning_stats['short']['total_loss'] += lightning_loss_short
+                
+                # Применяем компенсацию
+                compensation = lightning_loss_short * (lightning_compensation / 100)
+                lightning_stats['short']['total_compensation'] += compensation
+                lightning_stats['short']['net_loss'] += lightning_loss_short - compensation
+            
+            # Проверка стоп-лосса
+            stop_loss_triggered_long = False
+            stop_loss_triggered_short = False
+            stop_loss_long = 0.0
+            stop_loss_short = 0.0
+            
+            # Стоп-лосс для long позиций (падение цены)
+            price_drop_pct = (open_p - low_p) / open_p * 100
+            if price_drop_pct > stop_loss_pct:
+                stop_loss_triggered_long = True
+                stop_loss_long = price_drop_pct
+                stop_loss_stats['long']['count'] += 1
+                stop_loss_stats['long']['total_loss'] += stop_loss_long
+            
+            # Стоп-лосс для short позиций (рост цены)
+            price_rise_pct = (high_p - open_p) / open_p * 100
+            if price_rise_pct > stop_loss_pct:
+                stop_loss_triggered_short = True
+                stop_loss_short = price_rise_pct
+                stop_loss_stats['short']['count'] += 1
+                stop_loss_stats['short']['total_loss'] += stop_loss_short
+            
+            # Если сработали стопы или молнии, уменьшаем профит
+            if lightning_triggered or stop_loss_triggered_long or stop_loss_triggered_short:
+                breaks += 1
+            
+            # расчёт тел и теней в процентах
+            body_pct = abs(close_p - open_p) / base * 100
+            upper_wick_pct = (high_p - max(open_p, close_p)) / base * 100
+            lower_wick_pct = (min(open_p, close_p) - low_p) / low_p * 100
+            
+            # профит теней (гарантированный) для обеих сеток
+            upper_wick_trades = int(upper_wick_pct / actual_step)
+            lower_wick_trades = int(lower_wick_pct / actual_step)
+            wick_trades = upper_wick_trades + lower_wick_trades
+            profit_wicks = wick_trades * (actual_step - commission_pct)
+            
+            # убыток тел из-за одностороннего движения
+            is_red_candle = close_p < open_p
+            is_green_candle = close_p > open_p
+            
+            # Количество шагов сетки в теле свечи
+            body_steps = int(body_pct / actual_step)
+            
+            # Расчет профита/убытка от тела свечи
+            long_body_pnl = -body_steps * actual_step if is_red_candle else 0  # Long теряет на падении
+            short_body_pnl = -body_steps * actual_step if is_green_candle else 0  # Short теряет на росте
+            
+            # Суммируем для двух сеток с учетом стоп-лоссов и молний
+            long_pnl = profit_wicks + long_body_pnl - stop_loss_long - lightning_stats['long']['net_loss']
+            short_pnl = profit_wicks + short_body_pnl - stop_loss_short - lightning_stats['short']['net_loss']
+            
+            # Обновляем общие суммы
+            total_long += long_pnl
+            total_short += short_pnl
+            
+            # Отладочная информация для первых 3 свечей
+            if i < 3:
+                print(f"Свеча {i+1}: Body: {body_pct:.2f}%, Upper Wick: {upper_wick_pct:.2f}%, Lower Wick: {lower_wick_pct:.2f}%")
+                print(f"  Шагов в теле: {body_steps}, в верхней тени: {upper_wick_trades}, в нижней тени: {lower_wick_trades}")
+                print(f"  PnL Long: {long_pnl:.2f}%, PnL Short: {short_pnl:.2f}%")
+                if stop_loss_triggered_long or stop_loss_triggered_short:
+                    print(f"  Стоп-лосс: Long: {stop_loss_long:.2f}%, Short: {stop_loss_short:.2f}%")
+                if lightning_triggered:
+                    print(f"  Молния: Long: {lightning_loss_long:.2f}%, Short: {lightning_loss_short:.2f}%")
+        
+        # Рассчитываем средние убытки
+        if stop_loss_stats['long']['count'] > 0:
+            stop_loss_stats['long']['avg_loss'] = stop_loss_stats['long']['total_loss'] / stop_loss_stats['long']['count']
+        if stop_loss_stats['short']['count'] > 0:
+            stop_loss_stats['short']['avg_loss'] = stop_loss_stats['short']['total_loss'] / stop_loss_stats['short']['count']
+        
+        return {
+            'combined_pct': total_long + total_short,
+            'long_pct': total_long,
+            'short_pct': total_short,
+            'breaks': breaks,
+            'grid_step_pct': actual_step,
+            'grid_step_used': actual_step,
+            'commission_pct': commission_pct,
+            'stop_loss_pct': stop_loss_pct,
+            'lightning_compensation': lightning_compensation,
+            
+            # Детальная статистика стоп-лоссов
+            'stop_loss_stats': stop_loss_stats,
+            'total_stop_loss_count': stop_loss_stats['long']['count'] + stop_loss_stats['short']['count'],
+            'total_stop_loss_amount': stop_loss_stats['long']['total_loss'] + stop_loss_stats['short']['total_loss'],
+            
+            # Детальная статистика молний
+            'lightning_stats': lightning_stats,
+            'total_lightning_count': lightning_stats['long']['count'] + lightning_stats['short']['count'],
+            'total_lightning_loss': lightning_stats['long']['total_loss'] + lightning_stats['short']['total_loss'],
+            'total_lightning_compensation': lightning_stats['long']['total_compensation'] + lightning_stats['short']['total_compensation'],
+            'total_lightning_net_loss': lightning_stats['long']['net_loss'] + lightning_stats['short']['net_loss'],
+            
+            # Границы сетки
+            'upper_bound': upper_bound,
+            'lower_bound': lower_bound,
+            'initial_price': initial_price
+        }
+    
 
 if __name__ == "__main__":
-    # Пример использования с новой логикой комиссий
+    # Пример использования
     import json
     
     # Загрузка API ключей из файла конфигурации
@@ -807,38 +501,29 @@ if __name__ == "__main__":
     # Получаем пары старше 1 года
     old_pairs = collector.get_pairs_older_than_year()
     
-    # Тестирование симуляции с реальными комиссиями
+    # Анализируем пары для сеточной торговли
     if old_pairs:
-        print("\nТестирование двойных сеток с реальными комиссиями Binance:")
-        for symbol in old_pairs[:3]:  # Тестируем на 3 парах
-            df = collector.get_historical_data(symbol, Client.KLINE_INTERVAL_1DAY, 30)
-            if not df.empty:
-                # Симуляция с реальными комиссиями
-                real_result = grid_analyzer.estimate_dual_grid_by_candles(
-                    df, use_real_commissions=True, stop_loss_pct=5.0
-                )
-                
-                # Симуляция со старой логикой для сравнения
-                old_result = grid_analyzer.estimate_dual_grid_by_candles(
-                    df, use_real_commissions=False, stop_loss_pct=5.0
-                )
-                
-                print(f"\n{symbol}:")
-                print(f"  С реальными комиссиями: {real_result['combined_pct']:.2f}% "
-                      f"(Long: {real_result['long_pct']:.2f}%, Short: {real_result['short_pct']:.2f}%)")
-                print(f"  Со старой логикой: {old_result['combined_pct']:.2f}% "
-                      f"(Long: {old_result['long_pct']:.2f}%, Short: {old_result['short_pct']:.2f}%)")
-                print(f"  Разница: {real_result['combined_pct'] - old_result['combined_pct']:.2f}%")
-                print(f"  Всего сделок: {real_result['total_trades']}, Молний: {real_result['lightning_count']}")
-    
-    # Пример анализа пары с новым методом
-    if old_pairs:
-        print("\nАнализ пар с новым методом:")
-        for symbol in old_pairs[:3]:
-            df = collector.get_historical_data(symbol, Client.KLINE_INTERVAL_1DAY, 30)
-            if not df.empty:
-                analysis = grid_analyzer.analyze_pair(df)
-                print(f"{symbol}: {analysis['total_score']:.2f} (Волатильность: {analysis['volatility']:.2f}%, "
-                      f"Диапазон цены: {analysis['price_range_percent']:.2f}%, "
-                      f"Ликвидность: {analysis['liquidity_score']:.2f}, "
-                      f"Резкие движения: {analysis['lightning_count']})")
+        # Для примера берем только 5 пар
+        best_pairs = grid_analyzer.get_best_grid_pairs(old_pairs[:5])
+        
+        if not best_pairs.empty:
+            print("\nЛучшие пары для сеточной торговли:")
+            for _, row in best_pairs.iterrows():
+                print(f"{row['symbol']}: доходность {row['potential_monthly_profit_pct']:.2f}%, "
+                      f"риск: {row['risk_level_text']}, шаг: {row['recommended_step_pct']:.2f}%")
+      # Тест приближённой симуляции двух сеток по всем парам
+    print("\nТестирование двойных сеток:")
+    for symbol in old_pairs[:5]:
+        df = collector.get_historical_data(symbol, Client.KLINE_INTERVAL_1DAY, 30)
+        if not df.empty:
+            dual_res = grid_analyzer.estimate_dual_grid_by_candles(df)
+            print(f"{symbol}: комбинированная доходность: {dual_res['combined_pct']:.2f}%, "
+                  f"long: {dual_res['long_pct']:.2f}%, short: {dual_res['short_pct']:.2f}%, "
+                  f"выходов за пределы: {dual_res['breaks']}")
+            
+            # Дополнительно выведем первые несколько свечей для анализа
+            print(f"Первые 3 свечи для {symbol}:")
+            for i, (_, candle) in enumerate(df.iloc[:3].iterrows()):
+                print(f"  {i+1}: Open: {candle['open']:.2f}, High: {candle['high']:.2f}, "
+                      f"Low: {candle['low']:.2f}, Close: {candle['close']:.2f}, "
+                      f"Range: {(candle['high']-candle['low'])/candle['low']*100:.2f}%")

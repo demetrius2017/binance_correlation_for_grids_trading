@@ -19,7 +19,11 @@ from modules.collector import BinanceDataCollector
 from modules.processor import DataProcessor
 from modules.correlation import CorrelationAnalyzer
 from modules.portfolio import PortfolioBuilder
-from modules.grid_analyzer import GridAnalyzer, MAKER_COMMISSION_RATE, TAKER_COMMISSION_RATE
+from modules.grid_analyzer import GridAnalyzer
+
+# Константы комиссий Binance
+MAKER_COMMISSION_RATE = 0.0002  # 0.02%
+TAKER_COMMISSION_RATE = 0.0005  # 0.05%
 
 
 # Функции для сохранения и загрузки API ключей
@@ -286,7 +290,15 @@ with tab5:
             key="timeframe_choice"
         )
         
-        period_days = st.slider("Период тестирования (дней)", 7, 90, 30, 1, key="period_days")        
+        period_days = st.slider("Период тестирования (дней)", 7, 90, 30, 1, key="period_days")
+        
+        st.subheader("Параметры молний")
+        lightning_compensation = st.slider(
+            "Компенсация при молнии (%)", 
+            0.0, 50.0, 30.0, 1.0,
+            help="Процент компенсации убытков от молний второй сеткой (реальная торговля: ~30%)",
+            key="lightning_compensation"
+        )        
         if st.button("Запустить симуляцию Grid Trading", key="run_grid_simulation"):
             if not api_key or not api_secret:
                 st.error("Введите API ключи для запуска симуляции")
@@ -294,9 +306,7 @@ with tab5:
                 try:
                     # Создаем экземпляры классов
                     collector = BinanceDataCollector(api_key, api_secret)
-                    grid_analyzer = GridAnalyzer(collector)
-                    
-                    # Получаем данные для симуляции
+                    grid_analyzer = GridAnalyzer(collector)                    # Получаем данные для симуляции
                     with st.spinner("Загружаем данные для симуляции..."):
                         if timeframe_choice == "1h":
                             df = collector.get_historical_data(grid_symbol, "1h", period_days * 24)
@@ -307,22 +317,20 @@ with tab5:
                         st.error(f"Нет данных для пары {grid_symbol}")
                     else:
                         with st.spinner("Выполняем симуляцию..."):
-                            # Симуляция только с реальными комиссиями
+                            # Симуляция с полными параметрами включая стоп-лосс и компенсацию молний
                             result = grid_analyzer.estimate_dual_grid_by_candles(
                                 df,
                                 grid_range_pct=grid_range,
                                 grid_step_pct=grid_step,
-                                use_real_commissions=True,  # Всегда используем реальные комиссии
+                                commission_pct=0.1,  # Стандартная комиссия Binance
                                 stop_loss_pct=stop_loss,
-                                stop_loss_coverage=stop_loss_coverage,
-                                stop_loss_strategy=stop_loss_strategy,
-                                close_both_on_stop_loss=(stop_loss_strategy == "close_both")
+                                lightning_compensation=lightning_compensation
                             )
                         
                         # Отображаем результаты
                         st.success("Симуляция завершена!")
                         
-                        st.subheader("Результаты симуляции с реальными комиссиями Binance")
+                        st.subheader("Результаты симуляции Grid Trading")
                         
                         # Основная информация
                         col_a, col_b, col_c = st.columns(3)
@@ -330,77 +338,146 @@ with tab5:
                         with col_a:
                             st.metric(
                                 "Общая доходность",
-                                f"{result['combined_pct']:.2f}%",
+                                f"{result.get('combined_pct', 0):.2f}%",
                                 delta=None
                             )
                             st.metric(
-                                "Всего сделок",
-                                result['total_trades']
+                                "Выходы за сетку",
+                                result.get('breaks', 0)
                             )
+                        
                         with col_b:
                             st.metric(
                                 "Long доходность",
-                                f"{result['long_pct']:.2f}%"
+                                f"{result.get('long_pct', 0):.2f}%"
                             )
                             st.metric(
-                                "Молний",
-                                result['lightning_count']
+                                "Шаг сетки",
+                                f"{result.get('grid_step_used', grid_step):.2f}%"
                             )
                         
                         with col_c:
                             st.metric(
                                 "Short доходность",
-                                f"{result['short_pct']:.2f}%"
+                                f"{result.get('short_pct', 0):.2f}%"
                             )
                             st.metric(
-                                "Стоп-лоссов",
-                                result['stop_loss_count']
-                            )
-                        
-                        # Детальная таблица
+                                "Использованы комиссии",
+                                f"{result.get('commission_pct', 0.1):.2f}%"
+                            )                        # Детальная таблица
                         st.subheader("Детальная статистика")
+                        
                         results_df = pd.DataFrame({
                             'Метрика': [
                                 'Общая доходность (%)',
                                 'Long доходность (%)',
                                 'Short доходность (%)',
-                                'Всего сделок',
-                                'Молний',
-                                'Стоп-лоссов',
-                                'Long активна',
-                                'Short активна',
+                                'Выходы за сетку',
                                 'Шаг сетки (%)',
                                 'Таймфрейм',
-                                'Период (дней)'
+                                'Период (дней)',
+                                'Компенсация молний (%)',
+                                'Стоп-лоссы (события)',
+                                'Стоп-лоссы (убытки %)',
+                                'Молнии (события)',
+                                'Молнии (чистые убытки %)'
                             ],
                             'Значение': [
-                                f"{result['combined_pct']:.2f}",
-                                f"{result['long_pct']:.2f}",
-                                f"{result['short_pct']:.2f}",
-                                str(result['total_trades']),
-                                str(result['lightning_count']),
-                                str(result['stop_loss_count']),
-                                "Да" if result['long_active'] else "Нет",
-                                "Да" if result['short_active'] else "Нет",
-                                f"{result['grid_step_pct']:.2f}",
+                                f"{result.get('combined_pct', 0):.2f}",
+                                f"{result.get('long_pct', 0):.2f}",
+                                f"{result.get('short_pct', 0):.2f}",
+                                str(result.get('breaks', 0)),
+                                f"{result.get('grid_step_pct', grid_step):.2f}",
                                 str(timeframe_choice),
-                                str(period_days)
+                                str(period_days),
+                                f"{lightning_compensation:.1f}",
+                                str(result.get('total_stop_loss_count', 0)),
+                                f"{result.get('total_stop_loss_amount', 0):.2f}",
+                                str(result.get('total_lightning_count', 0)),
+                                f"{result.get('total_lightning_net_loss', 0):.2f}"
                             ]})
                         
                         st.dataframe(results_df, use_container_width=True)
                         
-                        # Информация о комиссиях
-                        st.subheader("Информация о комиссиях")
+                        # Детальная статистика по стоп-лоссам и молниям
+                        if result.get('total_stop_loss_count', 0) > 0 or result.get('total_lightning_count', 0) > 0:
+                            st.subheader("📊 Детальная статистика убытков")
+                            
+                            # Создаем две колонки для стоп-лоссов и молний
+                            col_sl, col_lt = st.columns(2)
+                            
+                            with col_sl:
+                                st.markdown("### 🛑 Стоп-лоссы")
+                                stop_loss_stats = result.get('stop_loss_stats', {})
+                                
+                                # Общая статистика стоп-лоссов
+                                st.metric(
+                                    "Всего стоп-лоссов",
+                                    result.get('total_stop_loss_count', 0)
+                                )
+                                st.metric(
+                                    "Общая сумма убытков",
+                                    f"{result.get('total_stop_loss_amount', 0):.2f}%"
+                                )
+                                
+                                # Раздельная статистика
+                                if stop_loss_stats.get('long', {}).get('count', 0) > 0:
+                                    st.write(f"**Long позиции:**")
+                                    st.write(f"- События: {stop_loss_stats['long']['count']}")
+                                    st.write(f"- Убытки: {stop_loss_stats['long']['total_loss']:.2f}%")
+                                    st.write(f"- В среднем: {stop_loss_stats['long']['avg_loss']:.2f}%")
+                                
+                                if stop_loss_stats.get('short', {}).get('count', 0) > 0:
+                                    st.write(f"**Short позиции:**")
+                                    st.write(f"- События: {stop_loss_stats['short']['count']}")
+                                    st.write(f"- Убытки: {stop_loss_stats['short']['total_loss']:.2f}%")
+                                    st.write(f"- В среднем: {stop_loss_stats['short']['avg_loss']:.2f}%")
+                            
+                            with col_lt:
+                                st.markdown("### ⚡ Молнии (выходы за сетку)")
+                                lightning_stats = result.get('lightning_stats', {})
+                                
+                                # Общая статистика молний
+                                st.metric(
+                                    "Всего молний",
+                                    result.get('total_lightning_count', 0)
+                                )
+                                st.metric(
+                                    "Первоначальные убытки",
+                                    f"{result.get('total_lightning_loss', 0):.2f}%"
+                                )
+                                st.metric(
+                                    "Компенсация",
+                                    f"{result.get('total_lightning_compensation', 0):.2f}%"
+                                )
+                                st.metric(
+                                    "Финальные убытки",
+                                    f"{result.get('total_lightning_net_loss', 0):.2f}%"
+                                )
+                                
+                                # Раздельная статистика
+                                if lightning_stats.get('long', {}).get('count', 0) > 0:
+                                    st.write(f"**Long позиции (пробитие вверх):**")
+                                    st.write(f"- События: {lightning_stats['long']['count']}")
+                                    st.write(f"- Первоначальные убытки: {lightning_stats['long']['total_loss']:.2f}%")
+                                    st.write(f"- Компенсация: {lightning_stats['long']['total_compensation']:.2f}%")
+                                    st.write(f"- Финальные убытки: {lightning_stats['long']['net_loss']:.2f}%")
+                                
+                                if lightning_stats.get('short', {}).get('count', 0) > 0:
+                                    st.write(f"**Short позиции (пробитие вниз):**")
+                                    st.write(f"- События: {lightning_stats['short']['count']}")
+                                    st.write(f"- Первоначальные убытки: {lightning_stats['short']['total_loss']:.2f}%")
+                                    st.write(f"- Компенсация: {lightning_stats['short']['total_compensation']:.2f}%")
+                                    st.write(f"- Финальные убытки: {lightning_stats['short']['net_loss']:.2f}%")
                         
-                        # Рассчитываем общую уплаченную комиссию
-                        total_maker = result['long_maker_trades'] + result['short_maker_trades']
-                        total_taker = result['long_taker_trades'] + result['short_taker_trades']
+                        # Информация о симуляции
+                        st.subheader("Информация о симуляции")
                         
-                        # Приблизительная оценка общей комиссии
-                        total_commission_cost = (total_maker * MAKER_COMMISSION_RATE + total_taker * TAKER_COMMISSION_RATE) * 100
-                        
-                        st.metric("Общая комиссия уплачена", f"{total_commission_cost:.3f}%")
-                        st.caption("Комиссия рассчитана от каждой сделки: Maker 0.02%, Taker 0.05%")
+                        st.info(f"**Параметры симуляции:**\n"
+                                f"- Шаг сетки: {grid_step}%\n"
+                                f"- Диапазон сетки: {grid_range}%\n"
+                                f"- Компенсация молний: {lightning_compensation}%\n"
+                                f"- Используемые комиссии: 0.1%")
                         
                         # Рекомендации
                         st.subheader("Выводы и рекомендации")
@@ -409,12 +486,12 @@ with tab5:
                         else:
                             st.info("ℹ️ Для более точных результатов рекомендуются часовые данные")
                             
-                        if result['combined_pct'] > 0:
-                            st.success(f"✅ Стратегия прибыльна: {result['combined_pct']:.2f}%")
+                        if result.get('combined_pct', 0) > 0:
+                            st.success(f"✅ Стратегия прибыльна: {result.get('combined_pct', 0):.2f}%")
                         else:
-                            st.warning(f"⚠️ Стратегия убыточна: {result['combined_pct']:.2f}%")
+                            st.warning(f"⚠️ Стратегия убыточна: {result.get('combined_pct', 0):.2f}%")
                             
-                        st.info("💡 Все расчеты выполнены с учетом реальных комиссий Binance")
+                        st.info("💡 Интерфейс готов для тестирования с параметром компенсации молний")
                         
                 except Exception as e:
                     st.error(f"Ошибка при выполнении симуляции: {str(e)}")

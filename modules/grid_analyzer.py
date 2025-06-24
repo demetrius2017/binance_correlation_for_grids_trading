@@ -10,6 +10,8 @@ from datetime import datetime, timedelta
 from binance.client import Client
 import sys
 import os
+import csv
+import json
 
 # Добавляем родительский каталог в путь для импорта
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -306,311 +308,549 @@ class GridAnalyzer:
             return results_df.head(top_n)
         return pd.DataFrame()
     
-    def estimate_dual_grid_by_candles(self,
-                                     df: pd.DataFrame,
-                                     grid_range_pct: float = 20.0,
-                                     grid_step_pct: float = 1.0,
-                                     commission_pct: float = 0.1,
-                                     stop_loss_pct: float = 5.0,
-                                     loss_compensation_pct: float = 30.0) -> Dict[str, Any]:
+    def _process_path_segment(self, p_from: float, p_to: float, timestamp: Any,
+                              open_orders_long: Dict, open_orders_short: Dict,
+                              balance_long: float, balance_short: float,
+                              trade_log_long: List, trade_log_short: List,
+                              long_grid_prices: List[float], short_grid_prices: List[float],
+                              order_size_usd_long: float, order_size_usd_short: float,
+                              grid_step_pct: float, commission_pct: float,
+                              debug: bool = False, candle_counter: Any = 0):
         """
-        Приближённая симуляция двух сеток (long + short) по свечам.
-        Учёт проторговок тенями, прибыли/убытков по телу свечи, а также выхода за пределы сетки.
-        Детальное отслеживание убытков по стоп-лоссу и молниям с компенсацией.
-        Возвращает детальный список всех сделок.
+        Обрабатывает один сегмент движения цены внутри свечи (например, от open до low).
+        Собирает все возможные события (открытие/закрытие ордеров), сортирует их по цене
+        и исполняет в правильном порядке.
         """
-        breaks = 0
-        profitable_trades_long = 0
-        profitable_trades_short = 0
-        losing_trades_long = 0
-        losing_trades_short = 0
+        min_p, max_p = min(p_from, p_to), max(p_from, p_to)
+        direction = 'up' if p_to > p_from else 'down'
 
-        trades_long = []
-        trades_short = []
+        events = []
+
+        # 1. Собрать события на открытие ордеров
+        for price in long_grid_prices:
+            if min_p <= price <= max_p:
+                events.append({'price': price, 'type': 'open', 'side': 'long'})
+        for price in short_grid_prices:
+            if min_p <= price <= max_p:
+                events.append({'price': price, 'type': 'open', 'side': 'short'})
+
+        # 2. Собрать события на закрытие (Take Profit)
+        for entry_price, size in list(open_orders_long.items()):
+            tp_price = entry_price * (1 + grid_step_pct / 100)
+            if min_p <= tp_price <= max_p:
+                events.append({'price': tp_price, 'type': 'close', 'side': 'long', 'entry_price': entry_price, 'size': size})
         
-        stop_loss_stats = {
-            'long': {'count': 0, 'total_loss': 0.0, 'avg_loss': 0.0},
-            'short': {'count': 0, 'total_loss': 0.0, 'avg_loss': 0.0}
-        }
-        
-        lightning_stats = {
-            'long': {'count': 0, 'total_loss': 0.0, 'total_compensation': 0.0, 'net_loss': 0.0},
-            'short': {'count': 0, 'total_loss': 0.0, 'total_compensation': 0.0, 'net_loss': 0.0}
-        }
-        
-        atr_pct = self.calculate_atr(df)
-        recommended_step = max(atr_pct / 3, 0.5)
-        actual_step = grid_step_pct if grid_step_pct > 0 else recommended_step
-        
-        initial_price = df.iloc[0]['close']
-        upper_bound = initial_price * (1 + grid_range_pct / 100)
-        lower_bound = initial_price * (1 - grid_range_pct / 100)
-        
-        for i, (timestamp, row) in enumerate(df.iterrows()):
-            open_p, high_p, low_p, close_p = row['open'], row['high'], row['low'], row['close']
-            base = min(open_p, close_p)
-            
-            # 1. Молнии (выход за пределы сетки и перезапуск)
-            if high_p > upper_bound or low_p < lower_bound:
-                breaks += 1
+        for entry_price, size in list(open_orders_short.items()):
+            tp_price = entry_price * (1 - grid_step_pct / 100)
+            if min_p <= tp_price <= max_p:
+                events.append({'price': tp_price, 'type': 'close', 'side': 'short', 'entry_price': entry_price, 'size': size})
+
+        # 3. Сортировать события по цене в направлении движения
+        events.sort(key=lambda x: x['price'], reverse=(direction == 'down'))
+        if debug and events:
+            print(f"  -> Обработка сегмента: {p_from:.4f} -> {p_to:.4f} (Направление: {direction})")
+            print(f"     События на сегменте: {[f'{e['type']}/{e['side']}@{e['price']:.4f}' for e in events]}")
+
+        # 4. Исполнить события
+        for event in events:
+            price = event['price'] # Извлекаем цену из события
+                        
+            if event['type'] == 'open':
                 
-                if high_p > upper_bound:
-                    # Short сетка: убыток
-                    loss = (high_p - upper_bound) / upper_bound * 100
-                    compensation = loss * (loss_compensation_pct / 100)
-                    net_loss = loss - compensation
+                if event['side'] == 'long' and price not in open_orders_long:
+                    if order_size_usd_long <= 0: continue
+                    # Проверяем, хватает ли средств на покупку и комиссию
+                    commission = order_size_usd_long * (commission_pct / 100)
+                    if balance_long < (order_size_usd_long + commission):
+                        if debug:
+                            print(f"       * Недостаточно средств для открытия Long @ {price:.4f}. Баланс: ${balance_long:.2f}, Требуется: ${order_size_usd_long + commission:.2f}")
+                        continue
+                        
+                    size = order_size_usd_long / price
                     
-                    lightning_stats['short']['count'] += 1
-                    lightning_stats['short']['total_loss'] += loss
-                    lightning_stats['short']['total_compensation'] += compensation
-                    lightning_stats['short']['net_loss'] += net_loss
+                    # Вычитаем из баланса стоимость позиции и комиссию
+                    balance_long -= order_size_usd_long + commission
+                    open_orders_long[price] = size
                     
-                    losing_trades_short += 1
-                    trades_short.append({
-                        'timestamp': timestamp, 'type': 'Молния (Убыток)', 'price': high_p,
-                        'pnl_pct': -net_loss,
-                        'description': f"Пробой вверх, убыток {net_loss:.2f}%"
-                    })
+                    log_entry = {
+                        'timestamp': timestamp, 
+                        'type': 'Открытие Long', 
+                        'price': price, 
+                        'amount_usd': order_size_usd_long, 
+                        'commission_usd': commission, 
+                        'balance_usd': balance_long
+                    }
+                    trade_log_long.append(log_entry)
+                    
+                    if debug:
+                        print(f"       * EXEC: {log_entry['type']} @ {log_entry['price']:.4f}, SizeUSD: {log_entry['amount_usd']:.2f}, "
+                              f"Комиссия: {log_entry['commission_usd']:.4f}, Новый баланс: ${log_entry['balance_usd']:.2f}")
 
-                    # Long сетка: прибыль
-                    closure_profit = grid_range_pct / 2.0
-                    profitable_trades_long += 1
-                    trades_long.append({
-                        'timestamp': timestamp, 'type': 'Молния (Профит)', 'price': high_p,
-                        'pnl_pct': closure_profit,
-                        'description': f"Фиксация прибыли при пробое вверх"
-                    })
-                else:  # low_p < lower_bound
-                    # Long сетка: убыток
-                    loss = (lower_bound - low_p) / lower_bound * 100
-                    compensation = loss * (loss_compensation_pct / 100)
-                    net_loss = loss - compensation
+                elif event['side'] == 'short' and price not in open_orders_short:
+                    if order_size_usd_short <= 0: continue
+                    
+                    # Для Short используем маржинальную торговлю (требуется маржа)
+                    margin_requirement = 0.10  # 10% от стоимости позиции как маржа
+                    required_margin = order_size_usd_short * margin_requirement
+                    commission = order_size_usd_short * (commission_pct / 100)
+                    
+                    # Проверяем, хватает ли средств на маржу и комиссию
+                    if balance_short < (required_margin + commission):
+                        if debug:
+                            print(f"       * Недостаточно средств для открытия Short @ {price:.4f}. Баланс: ${balance_short:.2f}, "
+                                  f"Требуется маржа: ${required_margin:.2f}, Комиссия: ${commission:.2f}")
+                        continue
+                    
+                    size = order_size_usd_short / price
+                    
+                    # Вычитаем из баланса маржу и комиссию
+                    balance_short -= (required_margin + commission)
+                    open_orders_short[price] = size
+                    
+                    log_entry = {
+                        'timestamp': timestamp, 
+                        'type': 'Открытие Short', 
+                        'price': price, 
+                        'amount_usd': order_size_usd_short, 
+                        'margin_usd': required_margin,
+                        'commission_usd': commission, 
+                        'balance_usd': balance_short
+                    }
+                    trade_log_short.append(log_entry)
+                    
+                    if debug:
+                        print(f"       * EXEC: {log_entry['type']} @ {log_entry['price']:.4f}, SizeUSD: {log_entry['amount_usd']:.2f}, "
+                              f"Маржа: ${log_entry['margin_usd']:.2f}, Комиссия: {log_entry['commission_usd']:.4f}, "
+                              f"Новый баланс: ${log_entry['balance_usd']:.2f}")
 
-                    lightning_stats['long']['count'] += 1
-                    lightning_stats['long']['total_loss'] += loss
-                    lightning_stats['long']['total_compensation'] += compensation
-                    lightning_stats['long']['net_loss'] += net_loss
+            elif event['type'] == 'close':
+                entry_price = event['entry_price']
+                size = event['size']
+                
+                if event['side'] == 'long' and entry_price in open_orders_long:
+                    # Рассчитываем PnL
+                    entry_value = entry_price * size
+                    exit_value = price * size
+                    profit = exit_value - entry_value
+                    commission_entry = entry_value * (commission_pct / 100)
+                    commission_exit = exit_value * (commission_pct / 100)
+                    total_commission = commission_entry + commission_exit
+                    net_profit = profit - total_commission
+                    
+                    # Возвращаем на баланс стоимость продажи за вычетом комиссии
+                    balance_long += exit_value - commission_exit
+                    
+                    # Удаляем ордер
+                    del open_orders_long[entry_price]
+                    
+                    # Логируем сделку
+                    log_entry = {
+                        'timestamp': timestamp,
+                        'type': 'Закрытие Long',
+                        'price': price,
+                        'entry_price': entry_price,
+                        'amount_usd': entry_value,
+                        'exit_value_usd': exit_value,
+                        'profit_usd': profit,
+                        'commission_usd': total_commission,
+                        'net_pnl_usd': net_profit,
+                        'balance_usd': balance_long
+                    }
+                    trade_log_long.append(log_entry)
+                    if debug:
+                        print(f"       * EXEC: {log_entry['type']} @ {log_entry['price']:.4f} (from {log_entry['entry_price']:.4f}), " 
+                              f"PnL: {log_entry['net_pnl_usd']:.4f}, Комиссия: {log_entry['commission_usd']:.4f}, "
+                              f"New Balance: {log_entry['balance_usd']:.2f}")
 
-                    losing_trades_long += 1
-                    trades_long.append({
-                        'timestamp': timestamp, 'type': 'Молния (Убыток)', 'price': low_p,
-                        'pnl_pct': -net_loss,
-                        'description': f"Пробой вниз, убыток {net_loss:.2f}%"
-                    })
+                elif event['side'] == 'short' and entry_price in open_orders_short:
+                    # Рассчитываем PnL
+                    entry_value = entry_price * size
+                    exit_value = price * size
+                    profit = entry_value - exit_value
+                    commission_entry = entry_value * (commission_pct / 100)
+                    commission_exit = exit_value * (commission_pct / 100)
+                    total_commission = commission_entry + commission_exit
+                    net_profit = profit - total_commission
 
-                    # Short сетка: прибыль
-                    closure_profit = grid_range_pct / 2.0
-                    profitable_trades_short += 1
-                    trades_short.append({
-                        'timestamp': timestamp, 'type': 'Молния (Профит)', 'price': low_p,
-                        'pnl_pct': closure_profit,
-                        'description': f"Фиксация прибыли при пробое вниз"
-                    })
+                    # Возвращаем маржу и добавляем PnL
+                    margin_requirement = 0.10 
+                    margin_returned = entry_value * margin_requirement
+                    balance_short += margin_returned + net_profit
+                    
+                    # Удаляем ордер
+                    del open_orders_short[entry_price]
+                    
+                    # Логируем сделку
+                    log_entry = {
+                        'timestamp': timestamp,
+                        'type': 'Закрытие Short',
+                        'price': price,
+                        'entry_price': entry_price,
+                        'amount_usd': entry_value,
+                        'exit_value_usd': exit_value,
+                        'profit_usd': profit,
+                        'commission_usd': total_commission,
+                        'net_pnl_usd': net_profit,
+                        'balance_usd': balance_short
+                    }
+                    trade_log_short.append(log_entry)
+                    if debug:
+                        print(f"       * EXEC: {log_entry['type']} @ {log_entry['price']:.4f} (from {log_entry['entry_price']:.4f}), " 
+                              f"PnL: {log_entry['net_pnl_usd']:.4f}, Комиссия: {log_entry['commission_usd']:.4f}, "
+                              f"New Balance: {log_entry['balance_usd']:.2f}")
 
-                # Перезапуск сетки
-                upper_bound = close_p * (1 + grid_range_pct / 100)
-                lower_bound = close_p * (1 - grid_range_pct / 100)
-                reset_desc = f"Новый диапазон: {lower_bound:.4f} - {upper_bound:.4f}"
-                trades_short.append({'timestamp': timestamp, 'type': 'Перезапуск сетки', 'price': close_p, 'pnl_pct': 0, 'description': reset_desc})
-                trades_long.append({'timestamp': timestamp, 'type': 'Перезапуск сетки', 'price': close_p, 'pnl_pct': 0, 'description': reset_desc})
-                continue
+        return balance_long, balance_short
 
-            # 2. Стоп-лоссы
-            price_drop_pct = (open_p - low_p) / open_p * 100
-            if stop_loss_pct > 0 and price_drop_pct > stop_loss_pct:
-                net_loss = price_drop_pct * (1 - loss_compensation_pct / 100)
-                stop_loss_stats['long']['count'] += 1
-                stop_loss_stats['long']['total_loss'] += net_loss
-                losing_trades_long += 1
-                trades_long.append({
-                    'timestamp': timestamp, 'type': 'Стоп-лосс', 'price': low_p,
-                    'pnl_pct': -net_loss,
-                    'description': f"Падение на {price_drop_pct:.2f}%, убыток {net_loss:.2f}%"
-                })
+    def estimate_dual_grid_by_candles_realistic(self, 
+        df: pd.DataFrame,
+        initial_balance_long: float = 1000.0,
+        initial_balance_short: float = 1000.0,
+        order_size_usd_long: float = 100.0,
+        order_size_usd_short: float = 100.0,
+        grid_range_pct: float = 20.0,
+        grid_step_pct: float = 1.0,
+        commission_pct: float = 0.1,
+        stop_loss_pct: Optional[float] = None,
+        stop_loss_strategy: str = 'none',
+        debug: bool = False
+    ) -> Tuple[Dict[str, Any], Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """
+        Симулирует дуальную сеточную стратегию (Long/Short) на исторических данных (OHLCV).
+        Каждая сделка учитывает комиссии, реальное распределение средств и плавающий PnL.
 
-            price_rise_pct = (high_p - open_p) / open_p * 100
-            if stop_loss_pct > 0 and price_rise_pct > stop_loss_pct:
-                net_loss = price_rise_pct * (1 - loss_compensation_pct / 100)
-                stop_loss_stats['short']['count'] += 1
-                stop_loss_stats['short']['total_loss'] += net_loss
-                losing_trades_short += 1
-                trades_short.append({
-                    'timestamp': timestamp, 'type': 'Стоп-лосс', 'price': high_p,
-                    'pnl_pct': -net_loss,
-                    'description': f"Рост на {price_rise_pct:.2f}%, убыток {net_loss:.2f}%"
-                })
+        Args:
+            df: DataFrame с историческими данными (OHLCV).
+            initial_balance_long: Начальный баланс для Long-стратегии.
+            initial_balance_short: Начальный баланс для Short-стратегии.
+            order_size_usd_long: Размер ордера в USD для Long.
+            order_size_usd_short: Размер ордера в USD для Short.
+            grid_range_pct: Диапазон сетки в процентах.
+            grid_step_pct: Шаг сетки в процентах.
+            commission_pct: Комиссия биржи в процентах.
+            stop_loss_pct: Процент стоп-лосса.
+            stop_loss_strategy: Стратегия стоп-лосса ('none', 'reset_grid', 'stop_trading').
+            debug: Флаг для вывода отладочной информации.
 
-            # 3. Сделки по сетке (тени и тело)
-            profit_per_trade = actual_step - commission_pct
-            
-            # Верхняя тень (цена вверх, потом вниз) -> профит для Short, убыток для Long
-            upper_wick_pct = (high_p - max(open_p, close_p)) / base * 100
-            upper_wick_trades = int(upper_wick_pct / actual_step)
-            if upper_wick_trades > 0:
-                pnl = upper_wick_trades * profit_per_trade
-                profitable_trades_short += upper_wick_trades
-                trades_short.append({
-                    'timestamp': timestamp, 'type': 'Профит (Тень)', 'price': high_p,
-                    'pnl_pct': pnl, 'description': f'Верхняя тень ({upper_wick_trades} сделок)'
-                })
-                losing_trades_long += upper_wick_trades
-                trades_long.append({
-                    'timestamp': timestamp, 'type': 'Убыток (Тень)', 'price': high_p,
-                    'pnl_pct': -pnl, 'description': f'Верхняя тень ({upper_wick_trades} сделок)'
-                })
+        Returns:
+            Кортеж, содержащий:
+            - Словарь со статистикой по Long-стратегии.
+            - Словарь со статистикой по Short-стратегии.
+            - Журнал сделок для Long.
+            - Журнал сделок для Short.
+        """
+        balance_long = initial_balance_long
+        balance_short = initial_balance_short
+        open_orders_long: Dict[float, float] = {}
+        open_orders_short: Dict[float, float] = {}
+        trade_log_long: List[Dict[str, Any]] = []
+        trade_log_short: List[Dict[str, Any]] = []
 
-            # Нижняя тень (цена вниз, потом вверх) -> профит для Long, убыток для Short
-            lower_wick_pct = (min(open_p, close_p) - low_p) / low_p * 100
-            lower_wick_trades = int(lower_wick_pct / actual_step)
-            if lower_wick_trades > 0:
-                pnl = lower_wick_trades * profit_per_trade
-                profitable_trades_long += lower_wick_trades
-                trades_long.append({
-                    'timestamp': timestamp, 'type': 'Профит (Тень)', 'price': low_p,
-                    'pnl_pct': pnl, 'description': f'Нижняя тень ({lower_wick_trades} сделок)'
-                })
-                losing_trades_short += lower_wick_trades
-                trades_short.append({
-                    'timestamp': timestamp, 'type': 'Убыток (Тень)', 'price': low_p,
-                    'pnl_pct': -pnl, 'description': f'Нижняя тень ({lower_wick_trades} сделок)'
-                })
+        # Расчет количества уровней и размера ордера
+        num_levels = int(grid_range_pct / grid_step_pct) if grid_step_pct > 0 else 0
+        if num_levels == 0:
+            # Возвращаем пустые результаты, если сетка не может быть создана
+            return {}, {}, [], []
 
-            # Прибыль/убыток от тела свечи
-            body_pct = abs(close_p - open_p) / base * 100
-            body_steps = int(body_pct / actual_step)
-            if body_steps > 0:
-                pnl = body_steps * profit_per_trade
-                if close_p > open_p:  # Зеленая свеча
-                    profitable_trades_long += body_steps
-                    trades_long.append({
-                        'timestamp': timestamp, 'type': 'Профит (Тело)', 'price': close_p,
-                        'pnl_pct': pnl, 'description': f'Тело ({body_steps} сделок)'
-                    })
-                    losing_trades_short += body_steps
-                    trades_short.append({
-                        'timestamp': timestamp, 'type': 'Убыток (Тело)', 'price': close_p,
-                        'pnl_pct': -pnl, 'description': f'Тело ({body_steps} сделок)'
-                    })
-                elif close_p < open_p:  # Красная свеча
-                    profitable_trades_short += body_steps
-                    trades_short.append({
-                        'timestamp': timestamp, 'type': 'Профит (Тело)', 'price': close_p,
-                        'pnl_pct': pnl, 'description': f'Тело ({body_steps} сделок)'
-                    })
-                    losing_trades_long += body_steps
-                    trades_long.append({
-                        'timestamp': timestamp, 'type': 'Убыток (Тело)', 'price': close_p,
-                        'pnl_pct': -pnl, 'description': f'Тело ({body_steps} сделок)'
-                    })
+        # Автоматический расчет размера ордера, если он не задан (равен 0)
+        final_order_size_long = order_size_usd_long
+        if final_order_size_long == 0:
+            final_order_size_long = initial_balance_long / num_levels
 
-        # Сортируем сделки по времени
-        trades_long.sort(key=lambda x: x['timestamp'])
-        trades_short.sort(key=lambda x: x['timestamp'])
+        final_order_size_short = order_size_usd_short
+        if final_order_size_short == 0:
+            final_order_size_short = initial_balance_short / num_levels
 
-        # Считаем итоговую прибыль и баланс из журнала сделок
-        total_long = sum(trade['pnl_pct'] for trade in trades_long)
-        bal_long = 100.0
-        for trade in trades_long:
-            bal_long += trade['pnl_pct']
-            trade['balance_pct'] = bal_long
+        # Инициализация сеток
+        first_price = df['open'].iloc[0]
+        long_grid_prices = [first_price * (1 - i * grid_step_pct / 100) for i in range(1, num_levels + 1)]
+        short_grid_prices = [first_price * (1 + i * grid_step_pct / 100) for i in range(1, num_levels + 1)]
 
-        total_short = sum(trade['pnl_pct'] for trade in trades_short)
-        bal_short = 100.0
-        for trade in trades_short:
-            bal_short += trade['pnl_pct']
-            trade['balance_pct'] = bal_short
+        if debug:
+            print(f"Симуляция запущена. Начальные балансы: Long=${balance_long:.2f}, Short=${balance_short:.2f}")
+            print(f"Диапазон: {grid_range_pct}%, Шаг: {grid_step_pct:.2f}%, Уровней: {num_levels}")
+            print(f"Размер ордера Long: ${final_order_size_long:.2f}, Short: ${final_order_size_short:.2f}")
+            print(f"Первоначальная цена: {first_price:.4f}")
+            print(f"Комиссия: {commission_pct:.2f}%")
 
-        # Рассчитываем средние убытки
-        if stop_loss_stats['long']['count'] > 0:
-            stop_loss_stats['long']['avg_loss'] = stop_loss_stats['long']['total_loss'] / stop_loss_stats['long']['count']
-        if stop_loss_stats['short']['count'] > 0:
-            stop_loss_stats['short']['avg_loss'] = stop_loss_stats['short']['total_loss'] / stop_loss_stats['short']['count']
+        # Основной цикл по свечам
+        for index, candle in df.iterrows():
+            timestamp = candle.name
+            o, h, l, c = candle['open'], candle['high'], candle['low'], candle['close']
+
+            if debug:
+                print(f"\n--- Свеча #{index} ({timestamp}) | O:{o:.4f} H:{h:.4f} L:{l:.4f} C:{c:.4f} ---")
+
+            # Определяем путь цены внутри свечи
+            # True если open -> high -> low -> close, False если open -> low -> high -> close
+            path_ohlc = abs(h - o) > abs(l - o)
+
+            if path_ohlc:
+                # Путь: Open -> High -> Low -> Close
+                paths = [(o, h), (h, l), (l, c)]
+                if debug:
+                    print(f"  Путь свечи: Open -> High -> Low -> Close")
+            else:
+                # Путь: Open -> Low -> High -> Close
+                paths = [(o, l), (l, h), (h, c)]
+                if debug:
+                    print(f"  Путь свечи: Open -> Low -> High -> Close")
+
+            # Обработка каждого сегмента пути
+            for p_from, p_to in paths:
+                balance_long, balance_short = self._process_path_segment(
+                    p_from, p_to, timestamp,
+                    open_orders_long, open_orders_short,
+                    balance_long, balance_short,
+                    trade_log_long, trade_log_short,
+                    long_grid_prices, short_grid_prices,
+                    final_order_size_long, final_order_size_short,
+                    grid_step_pct, commission_pct, debug, index
+                )
+
+            # Проверка стоп-лоссов в конце каждой свечи (если включены)
+            if stop_loss_pct is not None and stop_loss_pct > 0:
+                # Рассчитываем плавающую прибыль/убыток для всех позиций
+                floating_pnl_long = 0
+                floating_pnl_short = 0
+                initial_investment_long = 0
+                initial_investment_short = 0
+                
+                # Расчет плавающего PнL для Long позиций
+                for entry_price, size in list(open_orders_long.items()):
+                    entry_value = entry_price * size
+                    current_value = c * size
+                    initial_investment_long += entry_value
+                    floating_pnl_long += current_value - entry_value
+                
+                # Расчет плавающего PнL для Short позиций
+                for entry_price, size in list(open_orders_short.items()):
+                    entry_value = entry_price * size
+                    current_value = c * size
+                    initial_investment_short += entry_value
+                    floating_pnl_short += entry_value - current_value
+
+                # Рассчитываем процент убытка от начального баланса
+                floating_loss_pct_long = abs(floating_pnl_long) / initial_investment_long * 100 if initial_investment_long > 0 else 0
+                floating_loss_pct_short = abs(floating_pnl_short) / initial_investment_short * 100 if initial_investment_short > 0 else 0
+
+                # Проверяем превышение порога стоп-лосса
+                stop_loss_triggered_long = floating_loss_pct_long >= stop_loss_pct
+                stop_loss_triggered_short = floating_loss_pct_short >= stop_loss_pct
+
+                if debug:
+                    if initial_investment_long > 0:
+                        print(f"  Long: Инвестировано ${initial_investment_long:.2f}, Плавающий PnL: ${floating_pnl_long:.2f} ({-floating_loss_pct_long:.2f}% убытка)")
+                    if initial_investment_short > 0:
+                        print(f"  Short: Инвестировано ${initial_investment_short:.2f}, Плавающий PnL: ${floating_pnl_short:.2f} ({-floating_loss_pct_short:.2f}% убытка)")
+
+                # Обработка стоп-лоссов для Long позиций если суммарный убыток превысил порог
+                if stop_loss_triggered_long:
+                    for entry_price, size in list(open_orders_long.items()):
+                        # Закрытие по стоп-лоссу
+                        entry_value = entry_price * size
+                        exit_value = c * size
+                        profit = exit_value - entry_value  # Будет отрицательным значением при убытке
+                        commission_entry = entry_value * (commission_pct / 100)
+                        commission_exit = exit_value * (commission_pct / 100)
+                        total_commission = commission_entry + commission_exit
+                        net_profit = profit - total_commission
+                        
+                        # Возвращаем в баланс только стоимость позиции при продаже минус комиссия
+                        balance_long += exit_value - commission_exit
+                        
+                        # Удаляем ордер
+                        del open_orders_long[entry_price]
+                        
+                        # Логируем сделку
+                        log_entry = {
+                            'timestamp': timestamp,
+                            'type': 'Стоп-лосс Long (Плавающий)',
+                            'price': c,
+                            'entry_price': entry_price,
+                            'amount_usd': entry_value,
+                            'exit_value_usd': exit_value,
+                            'profit_usd': profit,
+                            'commission_usd': total_commission,
+                            'net_pnl_usd': net_profit,
+                            'balance_usd': balance_long,
+                            'note': f"Сработал стоп-лосс {stop_loss_pct}% (общий убыток {floating_loss_pct_long:.2f}%)"
+                        }
+                        trade_log_long.append(log_entry)
+                        if debug:
+                            print(f"       * СТОП-ЛОСС Long @ {c:.4f} (from {entry_price:.4f}), " 
+                                  f"PnL: {net_profit:.4f}, Комиссия: {total_commission:.4f}, "
+                                  f"New Balance: {balance_long:.2f}")
+                
+                # Обработка стоп-лоссов для Short позиций если суммарный убыток превысил порог
+                if stop_loss_triggered_short:
+                    for entry_price, size in list(open_orders_short.items()):
+                        # Закрытие по стоп-лоссу
+                        entry_value = entry_price * size
+                        exit_value = c * size
+                        profit = entry_value - exit_value  # Будет отрицательным значением при убытке
+                        commission_entry = entry_value * (commission_pct / 100)
+                        commission_exit = exit_value * (commission_pct / 100)
+                        total_commission = commission_entry + commission_exit
+                        net_profit = profit - total_commission
+                        
+                        # Возвращаем маржу и прибыль/убыток
+                        margin_requirement = 0.10  # 10% от стоимости позиции как маржа
+                        margin_used = entry_value * margin_requirement
+                        balance_short += margin_used + net_profit
+                        
+                        # Удаляем ордер
+                        del open_orders_short[entry_price]
+                        
+                        # Логируем сделку
+                        log_entry = {
+                            'timestamp': timestamp,
+                            'type': 'Стоп-лосс Short (Плавающий)',
+                            'price': c,
+                            'entry_price': entry_price,
+                            'amount_usd': entry_value,
+                            'exit_value_usd': exit_value,
+                            'profit_usd': profit,
+                            'commission_usd': total_commission,
+                            'net_pnl_usd': net_profit,
+                            'balance_usd': balance_short,
+                            'note': f"Сработал стоп-лосс {stop_loss_pct}% (общий убыток {floating_loss_pct_short:.2f}%)"
+                        }
+                        trade_log_short.append(log_entry)
+
+                        if debug:
+                            print(f"       * СТОП-ЛОСС Short @ {c:.4f} (from {entry_price:.4f}), "
+                                  f"PnL: {net_profit:.4f}, Комиссия: {total_commission:.4f}, "
+                                  f"New Balance: {balance_short:.2f}")
+                
+                # Перезапуск сетки при необходимости
+                if (stop_loss_triggered_long or stop_loss_triggered_short) and stop_loss_strategy == 'reset_grid':
+                    long_grid_prices = [c * (1 - i * grid_step_pct / 100) for i in range(1, 100)]
+                    short_grid_prices = [c * (1 + i * grid_step_pct / 100) for i in range(1, 100)]
+                    if debug:
+                        print(f"       * Перезапуск сетки после стоп-лосса. Новая опорная цена: {c:.4f}")
+                elif stop_loss_strategy == 'stop_trading':
+                    # Очистка всех открытых ордеров
+                    open_orders_long.clear()
+                    open_orders_short.clear()
+                    if debug:
+                        print(f"       * Остановка торговли после стоп-лосса.")
+
+        # Закрытие всех открытых ордеров по последней цене
+        last_price = df['close'].iloc[-1]
+        last_timestamp = df.index[-1]
         
-        total_trades_long = profitable_trades_long + losing_trades_long
-        total_trades_short = profitable_trades_short + losing_trades_short
+        if debug:
+            print(f"\n--- Закрытие всех открытых ордеров по последней цене: {last_price:.4f} ---")
+        
+        # Закрытие Long ордеров
+        for entry_price, size in list(open_orders_long.items()):
+            entry_value = entry_price * size
+            exit_value = last_price * size
+            profit = exit_value - entry_value
+            commission_entry = entry_value * (commission_pct / 100)
+            commission_exit = exit_value * (commission_pct / 100)
+            total_commission = commission_entry + commission_exit
+            net_profit = profit - total_commission
+            balance_long += exit_value - commission_exit
+            
+            # Логируем сделку
+            log_entry = {
+                'timestamp': last_timestamp,
+                'type': 'Закрытие Long (Финал)',
+                'price': last_price,
+                'entry_price': entry_price,
+                'amount_usd': entry_value,
+                'exit_value_usd': exit_value,
+                'profit_usd': profit,
+                'commission_usd': total_commission,
+                'net_pnl_usd': net_profit,
+                'balance_usd': balance_long
+            }
+            trade_log_long.append(log_entry)
+            if debug:
+                print(f"   * EXEC: {log_entry['type']} @ {log_entry['price']:.4f} (from {log_entry['entry_price']:.4f}), "
+                      f"PnL: {log_entry['net_pnl_usd']:.4f}, Комиссия: {log_entry['commission_usd']:.4f}, "
+                      f"New Balance: {log_entry['balance_usd']:.2f}")
+        
+        # Закрытие Short ордеров
+        for entry_price, size in list(open_orders_short.items()):
+            entry_value = entry_price * size
+            exit_value = last_price * size
+            profit = entry_value - exit_value
+            commission_entry = entry_value * (commission_pct / 100)
+            commission_exit = exit_value * (commission_pct / 100)
+            total_commission = commission_entry + commission_exit
+            net_profit = profit - total_commission
+            
+            # Возвращаем маржу и прибыль/убыток
+            margin_requirement = 0.10  # 10% от стоимости позиции как маржа
+            margin_used = entry_value * margin_requirement
+            balance_short += margin_used + net_profit
+            
+            # Логируем сделку
+            log_entry = {
+                'timestamp': last_timestamp,
+                'type': 'Закрытие Short (Финал)',
+                'price': last_price,
+                'entry_price': entry_price,
+                'amount_usd': entry_value,
+                'exit_value_usd': exit_value,
+                'profit_usd': profit,
+                'commission_usd': total_commission,
+                'net_pnl_usd': net_profit,
+                'balance_usd': balance_short
+            }
+            trade_log_short.append(log_entry)
+            if debug:
+                print(f"       * EXEC: {log_entry['type']} @ {log_entry['price']:.4f} (from {log_entry['entry_price']:.4f}), " 
+                      f"PnL: {log_entry['net_pnl_usd']:.4f}, Комиссия: {log_entry['commission_usd']:.4f}, "
+                      f"New Balance: {log_entry['balance_usd']:.2f}")
 
-        return {
-            'combined_pct': total_long + total_short,
-            'long_pct': total_long,
-            'short_pct': total_short,
-            'breaks': breaks,
-            'grid_step_pct': actual_step,
-            'grid_step_used': actual_step,
-            'commission_pct': commission_pct,
-            'stop_loss_pct': stop_loss_pct,
-            'loss_compensation_pct': loss_compensation_pct,
-            'total_trades_long': total_trades_long,
-            'total_trades_short': total_trades_short,
-            'total_trades': total_trades_long + total_trades_short,
-            'profitable_trades_long': profitable_trades_long,
-            'profitable_trades_short': profitable_trades_short,
-            'profitable_trades': profitable_trades_long + profitable_trades_short,
-            'losing_trades_long': losing_trades_long,
-            'losing_trades_short': losing_trades_short,
-            'losing_trades': losing_trades_long + losing_trades_short,
-            'win_rate_long': (profitable_trades_long / total_trades_long * 100) if total_trades_long > 0 else 0,
-            'win_rate_short': (profitable_trades_short / total_trades_short * 100) if total_trades_short > 0 else 0,
-            'win_rate': ((profitable_trades_long + profitable_trades_short) / (total_trades_long + total_trades_short) * 100) if (total_trades_long + total_trades_short) > 0 else 0,
-            'stop_loss_stats': stop_loss_stats,
-            'total_stop_loss_count': stop_loss_stats['long']['count'] + stop_loss_stats['short']['count'],
-            'total_stop_loss_amount': stop_loss_stats['long']['total_loss'] + stop_loss_stats['short']['total_loss'],
-            'lightning_stats': lightning_stats,
-            'total_lightning_count': lightning_stats['long']['count'] + lightning_stats['short']['count'],
-            'total_lightning_loss': lightning_stats['long']['total_loss'] + lightning_stats['short']['total_loss'],
-            'total_lightning_compensation': lightning_stats['long']['total_compensation'] + lightning_stats['short']['total_compensation'],
-            'total_lightning_net_loss': lightning_stats['long']['net_loss'] + lightning_stats['short']['net_loss'],
-            'upper_bound': upper_bound,
-            'lower_bound': lower_bound,
-            'initial_price': initial_price,
-            'trades_long': trades_long,
-            'trades_short': trades_short
+        # Расчет итоговой статистики
+        stats_long = {
+            'final_balance': balance_long, 
+            'total_pnl': balance_long - initial_balance_long,
+            'total_pnl_pct': (balance_long - initial_balance_long) / initial_balance_long * 100,
+            'trades_count': len(trade_log_long),
+            'profitable_trades': sum(1 for trade in trade_log_long if trade.get('net_pnl_usd', 0) > 0),
+            'losing_trades': sum(1 for trade in trade_log_long if trade.get('net_pnl_usd', 0) < 0),
+            'win_rate': sum(1 for trade in trade_log_long if trade.get('net_pnl_usd', 0) > 0) / len(trade_log_long) * 100 if trade_log_long else 0,
+            'total_commission': sum(trade.get('commission_usd', 0) for trade in trade_log_long),
+            'avg_profit_per_trade': sum(trade.get('net_pnl_usd', 0) for trade in trade_log_long) / len(trade_log_long) if trade_log_long else 0
         }
+        
+        stats_short = {
+            'final_balance': balance_short, 
+            'total_pnl': balance_short - initial_balance_short,
+            'total_pnl_pct': (balance_short - initial_balance_short) / initial_balance_short * 100,
+            'trades_count': len(trade_log_short),
+            'profitable_trades': sum(1 for trade in trade_log_short if trade.get('net_pnl_usd', 0) > 0),
+            'losing_trades': sum(1 for trade in trade_log_short if trade.get('net_pnl_usd', 0) < 0),
+            'win_rate': sum(1 for trade in trade_log_short if trade.get('net_pnl_usd', 0) > 0) / len(trade_log_short) * 100 if trade_log_short else 0,
+            'total_commission': sum(trade.get('commission_usd', 0) for trade in trade_log_short),
+            'avg_profit_per_trade': sum(trade.get('net_pnl_usd', 0) for trade in trade_log_short) / len(trade_log_short) if trade_log_short else 0
+        }
+
+        if debug:
+            print("\n--- Итоговая статистика ---")
+            print(f"Long: Баланс=${stats_long['final_balance']:.2f}, PnL=${stats_long['total_pnl']:.2f} ({stats_long['total_pnl_pct']:.2f}%), "
+                  f"Сделок={stats_long['trades_count']}, Win={stats_long['win_rate']:.2f}%, "
+                  f"Комиссии=${stats_long['total_commission']:.2f}")
+            print(f"Short: Баланс=${stats_short['final_balance']:.2f}, PnL=${stats_short['total_pnl']:.2f} ({stats_short['total_pnl_pct']:.2f}%), "
+                  f"Сделок={stats_short['trades_count']}, Win={stats_short['win_rate']:.2f}%, "
+                  f"Комиссии=${stats_short['total_commission']:.2f}")
+            print(f"Итого: Совокупный PnL=${stats_long['total_pnl'] + stats_short['total_pnl']:.2f} "
+                  f"({(stats_long['total_pnl_pct'] + stats_short['total_pnl_pct'])/2:.2f}%)")
+
+        return stats_long, stats_short, trade_log_long, trade_log_short
     
 
 if __name__ == "__main__":
-    # Пример использования
-    import json
+    # Этот блок можно использовать для локального тестирования модуля.
+    # Например, создать экземпляр GridAnalyzer и вызвать его методы.
     
-    # Загрузка API ключей из файла конфигурации
-    try:
-        with open("config.json", "r") as f:
-            config = json.load(f)
-            api_key = config.get("api_key", "")
-            api_secret = config.get("api_secret", "")
-    except Exception as e:
-        print(f"Ошибка при загрузке API ключей: {e}")
-        api_key = "YOUR_API_KEY"
-        api_secret = "YOUR_API_SECRET"
-    
-    collector = BinanceDataCollector(api_key, api_secret)
-    grid_analyzer = GridAnalyzer(collector)
-    
-    # Получаем пары старше 1 года
-    old_pairs = collector.get_pairs_older_than_year()
-    
-    # Анализируем пары для сеточной торговли
-    if old_pairs:
-        # Для примера берем только 5 пар
-        best_pairs = grid_analyzer.get_best_grid_pairs(old_pairs[:5])
-        
-        if not best_pairs.empty:
-            print("\nЛучшие пары для сеточной торговли:")
-            for _, row in best_pairs.iterrows():
-                print(f"{row['symbol']}: доходность {row['potential_monthly_profit_pct']:.2f}%, "
-                      f"риск: {row['risk_level_text']}, шаг: {row['recommended_step_pct']:.2f}%")
-      # Тест приближённой симуляции двух сеток по всем парам
-    print("\nТестирование двойных сеток:")
-    for symbol in old_pairs[:5]:
-        df = collector.get_historical_data(symbol, Client.KLINE_INTERVAL_1DAY, 30)
-        if not df.empty:
-            dual_res = grid_analyzer.estimate_dual_grid_by_candles(df)
-            print(f"{symbol}: комбинированная доходность: {dual_res['combined_pct']:.2f}%, "
-                  f"long: {dual_res['long_pct']:.2f}%, short: {dual_res['short_pct']:.2f}%, "
-                  f"выходов за пределы: {dual_res['breaks']}")
-            
-            # Дополнительно выведем первые несколько свечей для анализа
-            print(f"Первые 3 свечи для {symbol}:")
-            for i, (_, candle) in enumerate(df.iloc[:3].iterrows()):
-                print(f"  {i+1}: Open: {candle['open']:.2f}, High: {candle['high']:.2f}, "
-                      f"Low: {candle['low']:.2f}, Close: {candle['close']:.2f}, "
-                      f"Range: {(candle['high']-candle['low'])/candle['low']*100:.2f}%")
+    # Пример:
+    # collector = BinanceDataCollector(api_key="your_key", api_secret="your_secret")
+    # analyzer = GridAnalyzer(collector)
+    # analyzer.find_best_pairs_for_grid_trading()
+    pass # Оставляем пустым, чтобы избежать выполнения тестов при импорте

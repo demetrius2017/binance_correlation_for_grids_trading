@@ -1,0 +1,356 @@
+"""
+Модуль автоматической оптимизации параметров Grid Trading с использованием генетического алгоритма.
+"""
+
+import random
+import numpy as np
+import pandas as pd
+from typing import List, Dict, Tuple, Any
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+import time
+
+@dataclass
+class OptimizationParams:
+    """Параметры для оптимизации"""
+    grid_range_pct: float
+    grid_step_pct: float
+    stop_loss_pct: float
+    
+    def to_dict(self):
+        return {
+            'grid_range_pct': self.grid_range_pct,
+            'grid_step_pct': self.grid_step_pct,
+            'stop_loss_pct': self.stop_loss_pct
+        }
+
+@dataclass
+class OptimizationResult:
+    """Результат оптимизации"""
+    params: OptimizationParams
+    backtest_score: float
+    forward_score: float
+    combined_score: float
+    trades_count: int
+    drawdown: float
+    
+class GridOptimizer:
+    """Класс для оптимизации параметров Grid Trading"""
+    
+    def __init__(self, grid_analyzer, commission_rate=0.0005):
+        self.grid_analyzer = grid_analyzer
+        self.commission_rate = commission_rate
+        
+        # Границы параметров для оптимизации
+        self.param_bounds = {
+            'grid_range_pct': (5.0, 50.0),    # 5-50%
+            'grid_step_pct': (0.1, 5.0),      # 0.1-5%
+            'stop_loss_pct': (0.0, 15.0)      # 0-15%
+        }
+        
+    def create_random_params(self) -> OptimizationParams:
+        """Создает случайные параметры в заданных границах"""
+        return OptimizationParams(
+            grid_range_pct=random.uniform(*self.param_bounds['grid_range_pct']),
+            grid_step_pct=random.uniform(*self.param_bounds['grid_step_pct']),
+            stop_loss_pct=random.uniform(*self.param_bounds['stop_loss_pct'])
+        )
+        
+    def mutate_params(self, params: OptimizationParams, mutation_rate=0.1) -> OptimizationParams:
+        """Мутация параметров для генетического алгоритма"""
+        new_params = OptimizationParams(
+            grid_range_pct=params.grid_range_pct,
+            grid_step_pct=params.grid_step_pct,
+            stop_loss_pct=params.stop_loss_pct
+        )
+        
+        # Мутация каждого параметра с заданной вероятностью
+        if random.random() < mutation_rate:
+            mutation_factor = random.uniform(0.8, 1.2)  # ±20%
+            new_params.grid_range_pct = np.clip(
+                new_params.grid_range_pct * mutation_factor,
+                *self.param_bounds['grid_range_pct']
+            )
+            
+        if random.random() < mutation_rate:
+            mutation_factor = random.uniform(0.8, 1.2)
+            new_params.grid_step_pct = np.clip(
+                new_params.grid_step_pct * mutation_factor,
+                *self.param_bounds['grid_step_pct']
+            )
+            
+        if random.random() < mutation_rate:
+            mutation_factor = random.uniform(0.8, 1.2)
+            new_params.stop_loss_pct = np.clip(
+                new_params.stop_loss_pct * mutation_factor,
+                *self.param_bounds['stop_loss_pct']
+            )
+            
+        return new_params
+        
+    def crossover_params(self, parent1: OptimizationParams, parent2: OptimizationParams) -> OptimizationParams:
+        """Скрещивание параметров двух родителей"""
+        return OptimizationParams(
+            grid_range_pct=random.choice([parent1.grid_range_pct, parent2.grid_range_pct]),
+            grid_step_pct=random.choice([parent1.grid_step_pct, parent2.grid_step_pct]),
+            stop_loss_pct=random.choice([parent1.stop_loss_pct, parent2.stop_loss_pct])
+        )
+        
+    def evaluate_params(self, params: OptimizationParams, backtest_df: pd.DataFrame, 
+                       forward_df: pd.DataFrame, initial_balance: float) -> OptimizationResult:
+        """Оценка параметров на бэктесте и форвард тесте"""
+        
+        try:
+            # Бэктест
+            stop_loss = params.stop_loss_pct if params.stop_loss_pct > 0 else None
+            
+            stats_long_bt, stats_short_bt, _, _ = self.grid_analyzer.estimate_dual_grid_by_candles_realistic(
+                df=backtest_df,
+                initial_balance_long=initial_balance,
+                initial_balance_short=initial_balance,
+                grid_range_pct=params.grid_range_pct,
+                grid_step_pct=params.grid_step_pct,
+                order_size_usd_long=0,
+                order_size_usd_short=0,
+                commission_pct=self.commission_rate * 100,
+                stop_loss_pct=stop_loss,
+                debug=False
+            )
+            
+            # Форвард тест
+            stats_long_ft, stats_short_ft, _, _ = self.grid_analyzer.estimate_dual_grid_by_candles_realistic(
+                df=forward_df,
+                initial_balance_long=initial_balance,
+                initial_balance_short=initial_balance,
+                grid_range_pct=params.grid_range_pct,
+                grid_step_pct=params.grid_step_pct,
+                order_size_usd_long=0,
+                order_size_usd_short=0,
+                commission_pct=self.commission_rate * 100,
+                stop_loss_pct=stop_loss,
+                debug=False
+            )
+            
+            # Расчет метрик
+            backtest_pnl_pct = ((stats_long_bt['total_pnl'] + stats_short_bt['total_pnl']) / (initial_balance * 2)) * 100
+            forward_pnl_pct = ((stats_long_ft['total_pnl'] + stats_short_ft['total_pnl']) / (initial_balance * 2)) * 100
+            
+            # Считаем стабильность как разность между бэктестом и форвардом
+            stability_penalty = abs(backtest_pnl_pct - forward_pnl_pct) * 0.5
+            
+            # Комбинированный скор: среднее арифметическое минус штраф за нестабильность
+            combined_score = (backtest_pnl_pct + forward_pnl_pct) / 2 - stability_penalty
+            
+            # Общее количество сделок
+            total_trades = stats_long_bt['trades_count'] + stats_short_bt['trades_count'] + \
+                          stats_long_ft['trades_count'] + stats_short_ft['trades_count']
+            
+            # Примерный расчет просадки (упрощенный)
+            drawdown = max(0, -min(backtest_pnl_pct, forward_pnl_pct))
+            
+            return OptimizationResult(
+                params=params,
+                backtest_score=backtest_pnl_pct,
+                forward_score=forward_pnl_pct,
+                combined_score=combined_score,
+                trades_count=total_trades,
+                drawdown=drawdown
+            )
+            
+        except Exception as e:
+            # В случае ошибки возвращаем плохой результат
+            return OptimizationResult(
+                params=params,
+                backtest_score=-100.0,
+                forward_score=-100.0,
+                combined_score=-100.0,
+                trades_count=0,
+                drawdown=100.0
+            )
+    
+    def optimize_genetic(self, df: pd.DataFrame, initial_balance: float, 
+                        population_size=50, generations=20, 
+                        forward_test_pct=0.3, max_workers=4,
+                        progress_callback=None) -> List[OptimizationResult]:
+        """
+        Генетический алгоритм оптимизации параметров
+        
+        Args:
+            df: Исторические данные
+            initial_balance: Начальный баланс
+            population_size: Размер популяции
+            generations: Количество поколений
+            forward_test_pct: Процент данных для форвард теста (0.3 = 30%)
+            max_workers: Количество потоков
+            progress_callback: Функция для отображения прогресса
+        """
+        
+        # Разделение данных на бэктест и форвард тест
+        split_idx = int(len(df) * (1 - forward_test_pct))
+        backtest_df = df.iloc[:split_idx].copy()
+        forward_df = df.iloc[split_idx:].copy()
+        
+        if progress_callback:
+            progress_callback(f"Разделение данных: {len(backtest_df)} точек для бэктеста, {len(forward_df)} для форвард теста")
+        
+        # Создание начальной популяции
+        population = [self.create_random_params() for _ in range(population_size)]
+        best_results = []
+        
+        for generation in range(generations):
+            if progress_callback:
+                progress_callback(f"Поколение {generation + 1}/{generations}")
+            
+            # Оценка популяции в многопоточном режиме
+            generation_results = []
+            
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_params = {
+                    executor.submit(
+                        self.evaluate_params, 
+                        params, 
+                        backtest_df, 
+                        forward_df, 
+                        initial_balance
+                    ): params for params in population
+                }
+                
+                for future in as_completed(future_to_params):
+                    result = future.result()
+                    generation_results.append(result)
+            
+            # Сортировка по комбинированному скору
+            generation_results.sort(key=lambda x: x.combined_score, reverse=True)
+            
+            # Сохранение лучшего результата поколения
+            best_results.append(generation_results[0])
+            
+            if progress_callback:
+                best = generation_results[0]
+                progress_callback(f"Лучший результат поколения: {best.combined_score:.2f}% "
+                                f"(BT: {best.backtest_score:.2f}%, FT: {best.forward_score:.2f}%)")
+            
+            # Селекция лучших (верхние 50%)
+            elite_size = population_size // 2
+            elite = [result.params for result in generation_results[:elite_size]]
+            
+            # Создание нового поколения
+            new_population = elite.copy()  # Элита переходит без изменений
+            
+            # Заполнение остальной популяции потомками и мутантами
+            while len(new_population) < population_size:
+                if len(new_population) < population_size - 5:  # Кроссовер
+                    parent1 = random.choice(elite)
+                    parent2 = random.choice(elite)
+                    child = self.crossover_params(parent1, parent2)
+                    child = self.mutate_params(child, mutation_rate=0.1)
+                    new_population.append(child)
+                else:  # Случайные особи для разнообразия
+                    new_population.append(self.create_random_params())
+            
+            population = new_population
+        
+        # Возвращаем лучшие результаты из всех поколений
+        best_results.sort(key=lambda x: x.combined_score, reverse=True)
+        return best_results
+    
+    def grid_search_adaptive(self, df: pd.DataFrame, initial_balance: float,
+                           forward_test_pct=0.3, iterations=3, 
+                           points_per_iteration=50, progress_callback=None) -> List[OptimizationResult]:
+        """
+        Адаптивный поиск по сетке с уменьшающимися диапазонами
+        
+        Args:
+            df: Исторические данные
+            initial_balance: Начальный баланс
+            forward_test_pct: Процент данных для форвард теста
+            iterations: Количество итераций уточнения
+            points_per_iteration: Количество точек на итерацию
+            progress_callback: Функция для отображения прогресса
+        """
+        
+        # Разделение данных
+        split_idx = int(len(df) * (1 - forward_test_pct))
+        backtest_df = df.iloc[:split_idx].copy()
+        forward_df = df.iloc[split_idx:].copy()
+        
+        # Текущие границы поиска
+        current_bounds = self.param_bounds.copy()
+        all_results = []
+        
+        for iteration in range(iterations):
+            if progress_callback:
+                progress_callback(f"Итерация {iteration + 1}/{iterations}")
+            
+            # Генерация точек для текущей итерации
+            test_params = []
+            for _ in range(points_per_iteration):
+                params = OptimizationParams(
+                    grid_range_pct=random.uniform(*current_bounds['grid_range_pct']),
+                    grid_step_pct=random.uniform(*current_bounds['grid_step_pct']),
+                    stop_loss_pct=random.uniform(*current_bounds['stop_loss_pct'])
+                )
+                test_params.append(params)
+            
+            # Тестирование в многопоточном режиме
+            iteration_results = []
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                future_to_params = {
+                    executor.submit(
+                        self.evaluate_params, 
+                        params, 
+                        backtest_df, 
+                        forward_df, 
+                        initial_balance
+                    ): params for params in test_params
+                }
+                
+                for future in as_completed(future_to_params):
+                    result = future.result()
+                    iteration_results.append(result)
+            
+            # Сортировка и добавление к общим результатам
+            iteration_results.sort(key=lambda x: x.combined_score, reverse=True)
+            all_results.extend(iteration_results)
+            
+            # Обновление границ поиска на основе лучших результатов
+            if iteration < iterations - 1:  # Не на последней итерации
+                top_results = iteration_results[:max(1, points_per_iteration // 5)]  # Топ 20%
+                
+                # Вычисление новых границ как ±25% от лучших значений
+                best_ranges = [r.params.grid_range_pct for r in top_results]
+                best_steps = [r.params.grid_step_pct for r in top_results]
+                best_stops = [r.params.stop_loss_pct for r in top_results]
+                
+                range_center = np.mean(best_ranges)
+                step_center = np.mean(best_steps)
+                stop_center = np.mean(best_stops)
+                
+                range_span = (max(best_ranges) - min(best_ranges)) / 2 + 1
+                step_span = (max(best_steps) - min(best_steps)) / 2 + 0.1
+                stop_span = (max(best_stops) - min(best_stops)) / 2 + 1
+                
+                current_bounds = {
+                    'grid_range_pct': (
+                        max(self.param_bounds['grid_range_pct'][0], range_center - range_span),
+                        min(self.param_bounds['grid_range_pct'][1], range_center + range_span)
+                    ),
+                    'grid_step_pct': (
+                        max(self.param_bounds['grid_step_pct'][0], step_center - step_span),
+                        min(self.param_bounds['grid_step_pct'][1], step_center + step_span)
+                    ),
+                    'stop_loss_pct': (
+                        max(self.param_bounds['stop_loss_pct'][0], stop_center - stop_span),
+                        min(self.param_bounds['stop_loss_pct'][1], stop_center + stop_span)
+                    )
+                }
+                
+                if progress_callback:
+                    best = iteration_results[0]
+                    progress_callback(f"Лучший результат итерации: {best.combined_score:.2f}% "
+                                    f"Новые границы: Range {current_bounds['grid_range_pct']}, "
+                                    f"Step {current_bounds['grid_step_pct']}")
+        
+        # Сортировка всех результатов
+        all_results.sort(key=lambda x: x.combined_score, reverse=True)
+        return all_results

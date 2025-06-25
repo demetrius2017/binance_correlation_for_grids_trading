@@ -20,6 +20,7 @@ from modules.processor import DataProcessor
 from modules.correlation import CorrelationAnalyzer
 from modules.portfolio import PortfolioBuilder
 from modules.grid_analyzer import GridAnalyzer
+from modules.optimizer import GridOptimizer
 
 # Константы комиссий Binance
 MAKER_COMMISSION_RATE = 0.0002  # 0.02%
@@ -140,12 +141,13 @@ log_container = st.container()
 saved_api_key, saved_api_secret = load_api_keys()
 
 # Создаем вкладки (всегда доступны)
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📊 Список пар", 
     "🔗 Информация", 
     "💼 Настройки", 
     "📈 Графики",
-    "⚡ Grid Trading"
+    "⚡ Grid Trading",
+    "🤖 Авто-оптимизация"
 ])
 
 # Предопределенный список популярных пар для всех вкладок
@@ -398,6 +400,248 @@ with tab5:
 
             except Exception as e:
                 st.error(f"Произошла ошибка во время симуляции: {e}")
+
+# Вкладка 6: Авто-оптимизация
+with tab6:
+    st.header("🤖 Автоматическая оптимизация параметров")
+    
+    st.markdown("""
+    **Как это работает:**
+    - Данные разделяются на бэктест (70%) и форвард тест (30%)
+    - Алгоритм ищет параметры, показывающие стабильные результаты на обеих частях
+    - Используется генетический алгоритм или адаптивный поиск по сетке
+    - Многопоточная обработка для ускорения
+    """)
+    
+    # Параметры оптимизации
+    st.subheader("Параметры оптимизации")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        opt_pair = st.selectbox(
+            "Пара для оптимизации",
+            popular_pairs,
+            key="opt_pair"
+        )
+        
+        opt_balance = st.number_input(
+            "Баланс для тестов (USDT)",
+            min_value=100.0,
+            max_value=10000.0,
+            value=1000.0,
+            step=100.0
+        )
+    
+    with col2:
+        opt_timeframe = st.selectbox(
+            "Таймфрейм",
+            options=["15m", "1h", "4h", "1d"],
+            index=1,
+            key="opt_timeframe"
+        )
+        
+        opt_days = st.slider(
+            "Дней истории",
+            min_value=30,
+            max_value=365,
+            value=180,
+            help="Общее количество дней данных"
+        )
+    
+    with col3:
+        opt_method = st.selectbox(
+            "Метод оптимизации",
+            options=["Генетический алгоритм", "Адаптивный поиск"],
+            help="Генетический - лучше для глобального поиска, Адаптивный - быстрее"
+        )
+        
+        max_workers = st.slider(
+            "Потоков",
+            min_value=1,
+            max_value=8,
+            value=4,
+            help="Количество параллельных потоков"
+        )
+    
+    # Дополнительные параметры в зависимости от метода
+    st.subheader("Настройки алгоритма")
+    
+    # Инициализируем переменные значениями по умолчанию
+    population_size = 50
+    generations = 20
+    iterations = 3
+    points_per_iteration = 50
+    
+    if opt_method == "Генетический алгоритм":
+        col_a, col_b = st.columns(2)
+        with col_a:
+            population_size = st.slider("Размер популяции", 20, 100, 50)
+        with col_b:
+            generations = st.slider("Поколений", 10, 50, 20)
+    else:
+        col_a, col_b = st.columns(2)
+        with col_a:
+            iterations = st.slider("Итераций", 2, 5, 3)
+        with col_b:
+            points_per_iteration = st.slider("Точек за итерацию", 20, 100, 50)
+    
+    st.markdown("---")
+    
+    # Кнопка запуска оптимизации
+    if st.button("🚀 Запустить оптимизацию", type="primary", key="start_optimization"):
+        if not saved_api_key or not saved_api_secret:
+            st.error("Пожалуйста, введите и сохраните API ключи в боковой панели.")
+        else:
+            try:
+                # Прогресс бар и контейнеры для вывода
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                
+                # Инициализация
+                status_text.text("Инициализация...")
+                collector = BinanceDataCollector(saved_api_key, saved_api_secret)
+                grid_analyzer = GridAnalyzer(collector)
+                optimizer = GridOptimizer(grid_analyzer, TAKER_COMMISSION_RATE)
+                
+                # Загрузка данных
+                status_text.text(f"Загрузка данных для {opt_pair}...")
+                progress_bar.progress(10)
+                
+                timeframe_in_minutes = {'15m': 15, '1h': 60, '4h': 240, '1d': 1440}
+                total_minutes = opt_days * 24 * 60
+                limit = int(total_minutes / timeframe_in_minutes[opt_timeframe])
+                
+                df_opt = collector.get_historical_data(opt_pair, opt_timeframe, limit)
+                
+                if df_opt.empty:
+                    st.error("Не удалось загрузить данные для оптимизации.")
+                else:
+                    progress_bar.progress(20)
+                    
+                    # Функция для обновления прогресса
+                    def progress_callback(message):
+                        status_text.text(message)
+                    
+                    start_time = time.time()
+                    
+                    # Запуск оптимизации в зависимости от выбранного метода
+                    if opt_method == "Генетический алгоритм":
+                        status_text.text("Запуск генетического алгоритма...")
+                        progress_bar.progress(30)
+                        
+                        results = optimizer.optimize_genetic(
+                            df=df_opt,
+                            initial_balance=opt_balance,
+                            population_size=population_size,
+                            generations=generations,
+                            forward_test_pct=0.3,
+                            max_workers=max_workers,
+                            progress_callback=progress_callback
+                        )
+                    else:
+                        status_text.text("Запуск адаптивного поиска...")
+                        progress_bar.progress(30)
+                        
+                        results = optimizer.grid_search_adaptive(
+                            df=df_opt,
+                            initial_balance=opt_balance,
+                            forward_test_pct=0.3,
+                            iterations=iterations,
+                            points_per_iteration=points_per_iteration,
+                            progress_callback=progress_callback
+                        )
+                    
+                    end_time = time.time()
+                    progress_bar.progress(100)
+                    status_text.text(f"Оптимизация завершена за {end_time - start_time:.1f} секунд")
+                    
+                    # Отображение результатов
+                    st.success(f"Найдено {len(results)} вариантов параметров!")
+                    
+                    # Топ-10 результатов
+                    st.subheader("🏆 Топ-10 лучших параметров")
+                    
+                    top_results = results[:10]
+                    results_data = []
+                    
+                    for i, result in enumerate(top_results):
+                        results_data.append({
+                            'Ранг': i + 1,
+                            'Общий скор (%)': f"{result.combined_score:.2f}",
+                            'Бэктест (%)': f"{result.backtest_score:.2f}",
+                            'Форвард (%)': f"{result.forward_score:.2f}",
+                            'Диапазон сетки (%)': f"{result.params.grid_range_pct:.1f}",
+                            'Шаг сетки (%)': f"{result.params.grid_step_pct:.2f}",
+                            'Стоп-лосс (%)': f"{result.params.stop_loss_pct:.1f}",
+                            'Сделок': result.trades_count,
+                            'Просадка (%)': f"{result.drawdown:.2f}"
+                        })
+                    
+                    results_df = pd.DataFrame(results_data)
+                    st.dataframe(results_df, use_container_width=True)
+                    
+                    # Детальная информация о лучшем результате
+                    if results:
+                        best_result = results[0]
+                        st.subheader("🥇 Лучший результат")
+                        
+                        col_info1, col_info2, col_info3 = st.columns(3)
+                        
+                        with col_info1:
+                            st.metric("Комбинированный скор", f"{best_result.combined_score:.2f}%")
+                            st.metric("Диапазон сетки", f"{best_result.params.grid_range_pct:.1f}%")
+                        
+                        with col_info2:
+                            st.metric("Бэктест vs Форвард", 
+                                    f"{best_result.backtest_score:.2f}% vs {best_result.forward_score:.2f}%")
+                            st.metric("Шаг сетки", f"{best_result.params.grid_step_pct:.2f}%")
+                        
+                        with col_info3:
+                            st.metric("Всего сделок", best_result.trades_count)
+                            st.metric("Стоп-лосс", f"{best_result.params.stop_loss_pct:.1f}%")
+                        
+                        # Анализ стабильности
+                        stability = abs(best_result.backtest_score - best_result.forward_score)
+                        if stability < 5:
+                            st.success(f"🟢 Высокая стабильность (разность {stability:.2f}%)")
+                        elif stability < 10:
+                            st.warning(f"🟡 Средняя стабильность (разность {stability:.2f}%)")
+                        else:
+                            st.error(f"🔴 Низкая стабильность (разность {stability:.2f}%)")
+                        
+                        # Кнопка для тестирования лучших параметров
+                        st.subheader("Тестирование лучших параметров")
+                        
+                        if st.button("Протестировать лучшие параметры на полных данных"):
+                            with st.spinner("Тестирование..."):
+                                test_stats_long, test_stats_short, test_log_long, test_log_short = grid_analyzer.estimate_dual_grid_by_candles_realistic(
+                                    df=df_opt,
+                                    initial_balance_long=opt_balance,
+                                    initial_balance_short=opt_balance,
+                                    grid_range_pct=best_result.params.grid_range_pct,
+                                    grid_step_pct=best_result.params.grid_step_pct,
+                                    order_size_usd_long=0,
+                                    order_size_usd_short=0,
+                                    commission_pct=TAKER_COMMISSION_RATE * 100,
+                                    stop_loss_pct=best_result.params.stop_loss_pct if best_result.params.stop_loss_pct > 0 else None,
+                                    debug=False
+                                )
+                                
+                                total_pnl = test_stats_long['total_pnl'] + test_stats_short['total_pnl']
+                                total_pnl_pct = (total_pnl / (opt_balance * 2)) * 100
+                                
+                                st.success("Тест на полных данных завершен!")
+                                st.metric("Результат на полных данных", f"{total_pnl_pct:.2f}%", f"${total_pnl:.2f}")
+                                
+                                # Сравнение с ожидаемым результатом
+                                expected_avg = (best_result.backtest_score + best_result.forward_score) / 2
+                                difference = total_pnl_pct - expected_avg
+                                st.info(f"Отклонение от ожидаемого: {difference:.2f}%")
+                    
+            except Exception as e:
+                st.error(f"Ошибка во время оптимизации: {e}")
+                st.exception(e)
 
 # Основной блок запуска анализа (если кнопка нажата)
 if start_analysis:

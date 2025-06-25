@@ -1,20 +1,21 @@
 {
   "builds": [
     {
-      "src": "api/index.py",
+      "src": "api/lite-vercel.py",
       "use": "@vercel/python"
     }
   ],
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "/api/index.py"
+      "dest": "/api/lite-vercel.py"
     }
   ],
   "functions": {
-    "api/index.py": {
-      "maxDuration": 300,
-      "memory": 3008
+    "api/lite-vercel.py": {
+      "maxDuration": 60,
+      "memory": 1024,
+      "excludeFiles": "{__pycache__,*.pyc,test_*,*.md,TESTING_*,*_REPORT*,AUTO_*,DEPLOYMENT_*,FIX_*,GRID_*,OPTIMIZATION_*,PROJECT_*,REPORT_*,SIMULATION_*,TZ_*}/**"
     }
   },
   "env": {

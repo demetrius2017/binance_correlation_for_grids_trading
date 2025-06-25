@@ -1,0 +1,87 @@
+# Исключения для Vercel (уменьшение размера до 250MB)
+
+# Кэш Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Распространение / упаковка
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Тестовые файлы
+test_*
+*_test.py
+testing/
+tests/
+
+# Отчёты и документация
+*.md
+TESTING_*
+*_REPORT*
+AUTO_*
+DEPLOYMENT_*
+FIX_*
+GRID_*
+OPTIMIZATION_*
+PROJECT_*
+REPORT_*
+SIMULATION_*
+TZ_*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Локальные конфиги
+config.json
+.env
+*.local
+
+# Логи
+*.log
+
+# Большие файлы данных
+*.csv
+*.xlsx
+*.json.backup
+
+# Полная версия модулей (используем только lite версии)
+app.py
+modules/grid_analyzer.py
+modules/portfolio.py
+modules/correlation.py
+modules/processor.py
+
+# Альтернативные API
+api/index.py

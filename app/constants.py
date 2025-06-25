@@ -1,0 +1,3 @@
+# Общие константы
+MAKER_COMMISSION_RATE = 0.0002  # 0.02%
+TAKER_COMMISSION_RATE = 0.0005  # 0.05%

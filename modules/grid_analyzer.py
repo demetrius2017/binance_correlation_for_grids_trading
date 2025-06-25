@@ -427,6 +427,13 @@ class GridAnalyzer:
                 entry_price = event['entry_price']
                 size = event['size']
                 
+                # Расчет общей инвестиции и плавающего PnL для всех открытых позиций
+                initial_investment_long = sum([price * s for price, s in open_orders_long.items()])
+                initial_investment_short = sum([price * s for price, s in open_orders_short.items()])
+                
+                floating_pnl_long = sum([(price - ep) * s for ep, s in open_orders_long.items()])
+                floating_pnl_short = sum([(ep - price) * s for ep, s in open_orders_short.items()])
+                
                 if event['side'] == 'long' and entry_price in open_orders_long:
                     # Рассчитываем PnL
                     entry_value = entry_price * size
@@ -449,12 +456,14 @@ class GridAnalyzer:
                         'type': 'Закрытие Long',
                         'price': price,
                         'entry_price': entry_price,
+                        'size': size,
                         'amount_usd': entry_value,
                         'exit_value_usd': exit_value,
                         'profit_usd': profit,
                         'commission_usd': total_commission,
                         'net_pnl_usd': net_profit,
-                        'balance_usd': balance_long
+                        'balance_usd': balance_long,
+                        'trade_pnl_pct': (profit / entry_value) * 100  # Процент прибыли/убытка по сделке
                     }
                     trade_log_long.append(log_entry)
                     if debug:
@@ -673,7 +682,8 @@ class GridAnalyzer:
                             'commission_usd': total_commission,
                             'net_pnl_usd': net_profit,
                             'balance_usd': balance_long,
-                            'note': f"Сработал стоп-лосс {stop_loss_pct}% (общий убыток {floating_loss_pct_long:.2f}%)"
+                            'floating_pnl': floating_pnl_long,
+                            'free_margin': balance_long - initial_investment_long
                         }
                         trade_log_long.append(log_entry)
                         if debug:
@@ -713,7 +723,8 @@ class GridAnalyzer:
                             'commission_usd': total_commission,
                             'net_pnl_usd': net_profit,
                             'balance_usd': balance_short,
-                            'note': f"Сработал стоп-лосс {stop_loss_pct}% (общий убыток {floating_loss_pct_short:.2f}%)"
+                            'floating_pnl': floating_pnl_short,
+                            'free_margin': balance_short - initial_investment_short
                         }
                         trade_log_short.append(log_entry)
 
@@ -738,7 +749,23 @@ class GridAnalyzer:
         # Закрытие всех открытых ордеров по последней цене
         last_price = df['close'].iloc[-1]
         last_timestamp = df.index[-1]
-        
+
+        # Инициализация переменных плавающего PnL, если они не были определены ранее
+        floating_pnl_long = 0
+        floating_pnl_short = 0
+        initial_investment_long = 0
+        initial_investment_short = 0
+        for entry_price, size in list(open_orders_long.items()):
+            entry_value = entry_price * size
+            current_value = last_price * size
+            initial_investment_long += entry_value
+            floating_pnl_long += current_value - entry_value
+        for entry_price, size in list(open_orders_short.items()):
+            entry_value = entry_price * size
+            current_value = last_price * size
+            initial_investment_short += entry_value
+            floating_pnl_short += entry_value - current_value
+
         if debug:
             print(f"\n--- Закрытие всех открытых ордеров по последней цене: {last_price:.4f} ---")
         
@@ -764,7 +791,9 @@ class GridAnalyzer:
                 'profit_usd': profit,
                 'commission_usd': total_commission,
                 'net_pnl_usd': net_profit,
-                'balance_usd': balance_long
+                'balance_usd': balance_long,
+                'floating_pnl': floating_pnl_long,
+                'free_margin': balance_long - initial_investment_long
             }
             trade_log_long.append(log_entry)
             if debug:
@@ -784,8 +813,8 @@ class GridAnalyzer:
             
             # Возвращаем маржу и прибыль/убыток
             margin_requirement = 0.10  # 10% от стоимости позиции как маржа
-            margin_used = entry_value * margin_requirement
-            balance_short += margin_used + net_profit
+            margin_returned = entry_value * margin_requirement
+            balance_short += margin_returned + net_profit
             
             # Логируем сделку
             log_entry = {
@@ -798,7 +827,9 @@ class GridAnalyzer:
                 'profit_usd': profit,
                 'commission_usd': total_commission,
                 'net_pnl_usd': net_profit,
-                'balance_usd': balance_short
+                'balance_usd': balance_short,
+                'floating_pnl': floating_pnl_short,
+                'free_margin': balance_short - initial_investment_short
             }
             trade_log_short.append(log_entry)
             if debug:

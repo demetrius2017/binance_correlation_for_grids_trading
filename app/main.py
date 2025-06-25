@@ -1,59 +1,19 @@
-"""
-Простой веб-интерфейс для анализа и отбора торговых пар Binance с использованием Streamlit.
-"""
-
-import os
-import time
-import json
-from datetime import datetime
-from typing import List, Dict, Any, Tuple
-
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
 import streamlit as st
-from binance.client import Client
-
 from modules.collector import BinanceDataCollector
 from modules.processor import DataProcessor
 from modules.correlation import CorrelationAnalyzer
 from modules.portfolio import PortfolioBuilder
-from modules.grid_analyzer import GridAnalyzer
+from app.grid_trading import grid_trading_tab
+from app.analysis import analysis_tab
 
 # Константы комиссий Binance
 MAKER_COMMISSION_RATE = 0.0002  # 0.02%
 TAKER_COMMISSION_RATE = 0.0005  # 0.05%
 
-
-# Функции для сохранения и загрузки API ключей
-def save_api_keys(api_key: str, api_secret: str) -> None:
-    """Сохраняет API ключи в файл config.json"""
-    config = {
-        "api_key": api_key,
-        "api_secret": api_secret
-    }
-    with open("config.json", "w") as f:
-        json.dump(config, f)
-    print("API ключи сохранены в config.json")
-
-def load_api_keys() -> Tuple[str, str]:
-    """Загружает API ключи из файла config.json"""
-    try:
-        if os.path.exists("config.json"):
-            with open("config.json", "r") as f:
-                config = json.load(f)
-            return config.get("api_key", ""), config.get("api_secret", "")
-        return "", ""
-    except Exception as e:
-        print(f"Ошибка при загрузке API ключей: {e}")
-        return "", ""
-
-
 # Настройка страницы
 st.set_page_config(
     page_title="Анализатор торговых пар Binance",
-    page_icon="📊",
+    page_icon="4ca",
     layout="wide"
 )
 
@@ -131,7 +91,7 @@ with st.sidebar:
     )
 
 # Кнопка запуска анализа
-start_analysis = st.button("🚀 Запустить анализ", type="primary")
+start_analysis = st.button("680 Запустить анализ", type="primary")
 
 # Создаем контейнер для логов
 log_container = st.container()
@@ -141,11 +101,11 @@ saved_api_key, saved_api_secret = load_api_keys()
 
 # Создаем вкладки (всегда доступны)
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "📊 Список пар", 
-    "🔗 Информация", 
-    "💼 Настройки", 
-    "📈 Графики",
-    "⚡ Grid Trading"
+    "4ca Список пар", 
+    "517 Информация", 
+    "4bc Настройки", 
+    "4c8 Графики",
+    "50c Grid Trading"
 ])
 
 # Предопределенный список популярных пар для всех вкладок
@@ -180,7 +140,7 @@ with tab2:
     st.write(f"**Taker:** {TAKER_COMMISSION_RATE*100:.3f}%")
     
     st.subheader("Возможности системы")
-    st.write("✅ Анализ торговых пар")
+    st.write("44d Анализ торговых пар")
     st.write("✅ Симуляция Grid Trading с реальными комиссиями") 
     st.write("✅ Часовые и дневные данные")
     st.write("✅ Различные стратегии стоп-лосса")
@@ -313,13 +273,10 @@ with tab5:
         else:
             try:
                 # Инициализация инструментов
-                st.info("Подключение к Binance...")
                 collector = BinanceDataCollector(saved_api_key, saved_api_secret)
                 grid_analyzer = GridAnalyzer(collector)
-                st.success("Подключение успешно!")
                 
                 # Получение исторических данных
-                st.info(f"Загрузка исторических данных для {selected_pair_for_grid}...")
                 timeframe_in_minutes = {'15m': 15, '1h': 60, '4h': 240, '1d': 1440}
                 total_minutes = simulation_days * 24 * 60
                 limit = int(total_minutes / timeframe_in_minutes[timeframe])

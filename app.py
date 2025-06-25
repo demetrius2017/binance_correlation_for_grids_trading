@@ -39,8 +39,19 @@ def save_api_keys(api_key: str, api_secret: str) -> None:
     print("API ключи сохранены в config.json")
 
 def load_api_keys() -> Tuple[str, str]:
-    """Загружает API ключи из файла config.json"""
+    """Загружает API ключи из файла config.json или переменных окружения"""
     try:
+        # Сначала пробуем загрузить из Streamlit secrets (для Streamlit Cloud)
+        if hasattr(st, 'secrets') and 'binance' in st.secrets:
+            return st.secrets["binance"]["api_key"], st.secrets["binance"]["api_secret"]
+        
+        # Затем из переменных окружения (для Heroku, Railway, Render)
+        env_api_key = os.getenv("BINANCE_API_KEY")
+        env_api_secret = os.getenv("BINANCE_API_SECRET")
+        if env_api_key and env_api_secret:
+            return env_api_key, env_api_secret
+        
+        # Наконец из файла config.json (для локального использования)
         if os.path.exists("config.json"):
             with open("config.json", "r") as f:
                 config = json.load(f)

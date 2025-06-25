@@ -15,6 +15,9 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
 # Импорты модулей проекта
 from modules.collector import BinanceDataCollector
+from modules.processor import DataProcessor
+from modules.correlation import CorrelationAnalyzer
+from modules.portfolio import PortfolioBuilder
 from modules.grid_analyzer import GridAnalyzer
 from modules.optimizer import GridOptimizer, OptimizationParams
 
@@ -24,19 +27,17 @@ app = Flask(__name__)
 MAKER_COMMISSION_RATE = 0.0002  # 0.02%
 TAKER_COMMISSION_RATE = 0.0005  # 0.05%
 
-# Импорты модулей проекта
-from modules.collector import BinanceDataCollector
-from modules.processor import DataProcessor
-from modules.correlation import CorrelationAnalyzer
-from modules.portfolio import PortfolioBuilder
-from modules.grid_analyzer import GridAnalyzer
-from modules.optimizer import GridOptimizer
-
-app = Flask(__name__)
-
-# Константы комиссий
-MAKER_COMMISSION_RATE = 0.0002
-TAKER_COMMISSION_RATE = 0.0005
+def get_request_data(required_keys: List[str]) -> Dict[str, Any]:
+    """Безопасное получение данных из request.json с проверкой обязательных ключей"""
+    if request.json is None:
+        raise ValueError("Тело запроса должно содержать JSON данные")
+    
+    data = request.json
+    for key in required_keys:
+        if key not in data:
+            raise ValueError(f"Отсутствует обязательный параметр: {key}")
+    
+    return data
 
 # HTML шаблон с полной функциональностью
 HTML_TEMPLATE = """
@@ -129,6 +130,34 @@ HTML_TEMPLATE = """
             border-radius: 10px; 
             font-size: 16px;
             transition: all 0.3s;
+        }
+        .form-group input[type="range"] {
+            padding: 8px;
+            height: 40px;
+            background: linear-gradient(to right, #667eea 0%, #667eea 50%, #ddd 50%, #ddd 100%);
+            border-radius: 20px;
+            outline: none;
+            -webkit-appearance: none;
+            appearance: none;
+        }
+        .form-group input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            height: 20px;
+            width: 20px;
+            border-radius: 50%;
+            background: #667eea;
+            cursor: pointer;
+            box-shadow: 0 2px 10px rgba(102, 126, 234, 0.5);
+        }
+        .form-group input[type="range"]::-moz-range-thumb {
+            height: 20px;
+            width: 20px;
+            border-radius: 50%;
+            background: #667eea;
+            cursor: pointer;
+            border: none;
+            box-shadow: 0 2px 10px rgba(102, 126, 234, 0.5);
         }
         .form-group input:focus, .form-group select:focus {
             border-color: #667eea;
@@ -293,51 +322,120 @@ HTML_TEMPLATE = """
         </div>
 
         <div class="tabs">
-            <button class="tab active" onclick="showTab('grid')">⚡ Grid Trading</button>
+            <button class="tab active" onclick="showTab('settings')">⚙️ Настройки</button>
+            <button class="tab" onclick="showTab('grid')">⚡ Grid Trading</button>
             <button class="tab" onclick="showTab('optimization')">🤖 Авто-оптимизация</button>
-            <button class="tab" onclick="showTab('analysis')">📊 Анализ пар</button>
-            <button class="tab" onclick="showTab('settings')">⚙️ Настройки</button>
+            <button class="tab" onclick="showTab('filter')">🔍 Фильтр торговых пар</button>
+        </div>
+
+        <!-- Вкладка Настройки (первая) -->
+        <div id="settings" class="tab-content active">
+            <div class="card">
+                <h3>🔑 API Настройки</h3>
+                <div class="form-group">
+                    <label>Binance API Key:</label>
+                    <input type="password" id="apiKey" placeholder="Введите ваш API ключ">
+                </div>
+                <div class="form-group">
+                    <label>Binance API Secret:</label>
+                    <input type="password" id="apiSecret" placeholder="Введите секретный ключ">
+                </div>
+                <button class="btn" onclick="saveCredentials()">� Сохранить API ключи</button>
+            </div>
+
+            <div class="card">
+                <h3>🎯 Фильтр торговых пар</h3>
+                <p>Настройте фильтры и загрузите актуальный список пар</p>
+                <div class="grid">
+                    <div class="form-group">
+                        <label>Мин. объем (USDT):</label>
+                        <input type="range" id="minVolumeSlider" min="1000000" max="100000000" step="1000000" value="10000000" oninput="updateSliderValue('minVolumeSlider', 'minVolumeValue')">
+                        <span id="minVolumeValue">10,000,000</span> USDT
+                    </div>
+                    <div class="form-group">
+                        <label>Мин. цена ($):</label>
+                        <input type="range" id="minPriceSlider" min="0.001" max="10" step="0.001" value="0.001" oninput="updateSliderValue('minPriceSlider', 'minPriceValue')">
+                        <span id="minPriceValue">0.001</span> $
+                    </div>
+                    <div class="form-group">
+                        <label>Макс. цена ($):</label>
+                        <input type="range" id="maxPriceSlider" min="1" max="100000" step="1" value="1000" oninput="updateSliderValue('maxPriceSlider', 'maxPriceValue')">
+                        <span id="maxPriceValue">1,000</span> $
+                    </div>
+                    <div class="form-group">
+                        <label>Количество пар:</label>
+                        <input type="range" id="maxPairsSlider" min="10" max="200" step="10" value="50" oninput="updateSliderValue('maxPairsSlider', 'maxPairsValue')">
+                        <span id="maxPairsValue">50</span> пар
+                    </div>
+                </div>
+                <button class="btn" onclick="loadTradingPairs()" id="loadPairsBtn">🔄 Загрузить торговые пары</button>
+                
+                <div id="pairsLoadStatus" style="margin-top: 15px;"></div>
+                
+                <div style="margin-top: 20px;">
+                    <h4>📋 Загруженные пары (<span id="pairsCount">По умолчанию</span>):</h4>
+                    <div id="loadedPairsList" style="max-height: 200px; overflow-y: auto; margin-top: 10px; padding: 10px; background: #f8f9fa; border-radius: 5px;">
+                        <div style="font-size: 0.9em; color: #666;">
+                            Используются популярные пары по умолчанию. Нажмите "Загрузить торговые пары" для получения актуального списка.
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h4>ℹ️ Информация о системе</h4>
+                <p><strong>Комиссии Binance:</strong></p>
+                <ul>
+                    <li>Maker: 0.02%</li>
+                    <li>Taker: 0.05%</li>
+                </ul>
+                <p><strong>Возможности:</strong></p>
+                <ul>
+                    <li>✅ Полнофункциональная симуляция Grid Trading</li>
+                    <li>✅ Генетический алгоритм оптимизации</li>
+                    <li>✅ Адаптивный поиск параметров</li>
+                    <li>✅ Бэктест + Форвард тестирование</li>
+                    <li>✅ Учет реальных комиссий</li>
+                    <li>✅ Динамическая загрузка торговых пар</li>
+                </ul>
+            </div>
         </div>
 
         <!-- Вкладка Grid Trading -->
-        <div id="grid" class="tab-content active">
+        <div id="grid" class="tab-content">
             <div class="card">
                 <h3>⚡ Симуляция Grid Trading</h3>
                 <div class="grid">
                     <div class="form-group">
                         <label>Торговая пара:</label>
                         <select id="gridPair">
-                            <option value="BTCUSDT">BTCUSDT</option>
-                            <option value="ETHUSDT">ETHUSDT</option>
-                            <option value="BNBUSDT">BNBUSDT</option>
-                            <option value="ADAUSDT">ADAUSDT</option>
-                            <option value="XRPUSDT">XRPUSDT</option>
-                            <option value="LINKUSDT">LINKUSDT</option>
-                            <option value="DOTUSDT">DOTUSDT</option>
-                            <option value="UNIUSDT">UNIUSDT</option>
-                            <option value="LTCUSDT">LTCUSDT</option>
-                            <option value="SOLUSDT">SOLUSDT</option>
+                            <!-- Будет заполнено динамически -->
                         </select>
                     </div>
                     <div class="form-group">
+                        <label>Начальный баланс (USDT):</label>
+                        <input type="range" id="gridBalanceSlider" min="100" max="100000" step="100" value="1000" oninput="updateSliderValue('gridBalanceSlider', 'gridBalanceValue')">
+                        <span id="gridBalanceValue">1,000</span> USDT
+                    </div>
+                    <div class="form-group">
                         <label>Диапазон сетки (%):</label>
-                        <input type="number" id="gridRange" value="20" min="5" max="50" step="1">
+                        <input type="range" id="gridRangeSlider" min="5" max="50" step="0.5" value="20" oninput="updateSliderValue('gridRangeSlider', 'gridRangeValue')">
+                        <span id="gridRangeValue">20.0</span>%
                     </div>
                     <div class="form-group">
                         <label>Шаг сетки (%):</label>
-                        <input type="number" id="gridStep" value="1.0" min="0.1" max="5" step="0.1">
-                    </div>
-                    <div class="form-group">
-                        <label>Начальный баланс (USDT):</label>
-                        <input type="number" id="gridBalance" value="1000" min="100" max="100000" step="100">
+                        <input type="range" id="gridStepSlider" min="0.1" max="5" step="0.1" value="1.0" oninput="updateSliderValue('gridStepSlider', 'gridStepValue')">
+                        <span id="gridStepValue">1.0</span>%
                     </div>
                     <div class="form-group">
                         <label>Стоп-лосс (%):</label>
-                        <input type="number" id="gridStopLoss" value="5" min="0" max="20" step="0.5">
+                        <input type="range" id="gridStopLossSlider" min="0" max="20" step="0.5" value="5" oninput="updateSliderValue('gridStopLossSlider', 'gridStopLossValue')">
+                        <span id="gridStopLossValue">5.0</span>%
                     </div>
                     <div class="form-group">
                         <label>Дней истории:</label>
-                        <input type="number" id="gridDays" value="90" min="30" max="365" step="10">
+                        <input type="range" id="gridDaysSlider" min="7" max="365" step="7" value="90" oninput="updateSliderValue('gridDaysSlider', 'gridDaysValue')">
+                        <span id="gridDaysValue">90</span> дней
                     </div>
                 </div>
                 <button class="btn" onclick="runGridSimulation()">⚡ Запустить симуляцию</button>
@@ -357,11 +455,7 @@ HTML_TEMPLATE = """
                     <div class="form-group">
                         <label>Пара для оптимизации:</label>
                         <select id="optPair">
-                            <option value="BTCUSDT">BTCUSDT</option>
-                            <option value="ETHUSDT">ETHUSDT</option>
-                            <option value="BNBUSDT">BNBUSDT</option>
-                            <option value="ADAUSDT">ADAUSDT</option>
-                            <option value="XRPUSDT">XRPUSDT</option>
+                            <!-- Будет заполнено динамически -->
                         </select>
                     </div>
                     <div class="form-group">
@@ -373,19 +467,23 @@ HTML_TEMPLATE = """
                     </div>
                     <div class="form-group">
                         <label>Баланс для тестов (USDT):</label>
-                        <input type="number" id="optBalance" value="1000" min="100" max="10000" step="100">
+                        <input type="range" id="optBalanceSlider" min="100" max="10000" step="100" value="1000" oninput="updateSliderValue('optBalanceSlider', 'optBalanceValue')">
+                        <span id="optBalanceValue">1,000</span> USDT
                     </div>
                     <div class="form-group">
                         <label>Дней истории:</label>
-                        <input type="number" id="optDays" value="180" min="60" max="365" step="30">
+                        <input type="range" id="optDaysSlider" min="60" max="365" step="30" value="180" oninput="updateSliderValue('optDaysSlider', 'optDaysValue')">
+                        <span id="optDaysValue">180</span> дней
                     </div>
                     <div class="form-group">
                         <label>Размер популяции:</label>
-                        <input type="number" id="population" value="30" min="10" max="100" step="10">
+                        <input type="range" id="populationSlider" min="10" max="100" step="10" value="30" oninput="updateSliderValue('populationSlider', 'populationValue')">
+                        <span id="populationValue">30</span> особей
                     </div>
                     <div class="form-group">
                         <label>Поколений/Итераций:</label>
-                        <input type="number" id="generations" value="15" min="5" max="50" step="5">
+                        <input type="range" id="generationsSlider" min="5" max="50" step="5" value="15" oninput="updateSliderValue('generationsSlider', 'generationsValue')">
+                        <span id="generationsValue">15</span> поколений
                     </div>
                 </div>
                 <button class="btn" onclick="runOptimization()">🚀 Запустить оптимизацию</button>
@@ -397,58 +495,24 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- Остальные вкладки -->
-        <div id="analysis" class="tab-content">
+        <!-- Фильтр торговых пар (упрощенный) -->
+        <div id="filter" class="tab-content">
             <div class="card">
-                <h3>📊 Анализ торговых пар</h3>
-                <p>Базовый анализ пар по объему и волатильности</p>
-                <div class="grid-2">
-                    <div class="form-group">
-                        <label>Мин. объем (USDT):</label>
-                        <input type="number" id="minVolume" value="10000000" min="1000000">
-                    </div>
-                    <div class="form-group">
-                        <label>Количество пар:</label>
-                        <input type="number" id="maxPairs" value="30" min="5" max="100">
+                <h3>� Фильтр торговых пар</h3>
+                <p>Просмотр и тестирование фильтров торговых пар</p>
+                
+                <div id="filterResults" class="results">
+                    <div id="filterContent">
+                        <div class="warning">
+                            ℹ️ Сначала загрузите торговые пары во вкладке "Настройки"
+                        </div>
                     </div>
                 </div>
-                <button class="btn" onclick="analyzePairs()">📊 Анализировать</button>
-            </div>
-            <div id="analysisResults" class="results" style="display: none;">
-                <div id="analysisContent"></div>
             </div>
         </div>
 
-        <div id="settings" class="tab-content">
-            <div class="card">
-                <h3>🔑 API Настройки</h3>
-                <div class="form-group">
-                    <label>Binance API Key:</label>
-                    <input type="password" id="apiKey" placeholder="Введите ваш API ключ">
-                </div>
-                <div class="form-group">
-                    <label>Binance API Secret:</label>
-                    <input type="password" id="apiSecret" placeholder="Введите секретный ключ">
-                </div>
-                <button class="btn" onclick="saveCredentials()">💾 Сохранить</button>
-                
-                <div style="margin-top: 30px;">
-                    <h4>ℹ️ Информация о системе</h4>
-                    <p><strong>Комиссии Binance:</strong></p>
-                    <ul>
-                        <li>Maker: 0.02%</li>
-                        <li>Taker: 0.05%</li>
-                    </ul>
-                    <p><strong>Возможности:</strong></p>
-                    <ul>
-                        <li>✅ Полнофункциональная симуляция Grid Trading</li>
-                        <li>✅ Генетический алгоритм оптимизации</li>
-                        <li>✅ Адаптивный поиск параметров</li>
-                        <li>✅ Бэктест + Форвард тестирование</li>
-                        <li>✅ Учет реальных комиссий</li>
-                    </ul>
-                </div>
-            </div>
+        <div id="settings_old" class="tab-content" style="display: none;">
+            <!-- Старая вкладка настроек, теперь не используется -->
         </div>
     </div>
 
@@ -458,6 +522,92 @@ HTML_TEMPLATE = """
     </div>
 
     <script>
+        // Глобальные переменные
+        let loadedTradingPairs = [
+            'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'XRPUSDT',
+            'SOLUSDT', 'DOTUSDT', 'AVAXUSDT', 'MATICUSDT', 'LINKUSDT',
+            'UNIUSDT', 'LTCUSDT', 'ATOMUSDT', 'NEARUSDT', 'FILUSDT'
+        ]; // Популярные пары по умолчанию
+
+        // Функция для обновления значений ползунков
+        function updateSliderValue(sliderId, valueId) {
+            const slider = document.getElementById(sliderId);
+            const valueSpan = document.getElementById(valueId);
+            let value = parseFloat(slider.value);
+            
+            // Форматирование в зависимости от типа значения
+            if (sliderId.includes('Volume')) {
+                valueSpan.textContent = (value / 1000000).toFixed(1) + 'M';
+            } else if (sliderId.includes('Balance')) {
+                valueSpan.textContent = value.toLocaleString();
+            } else if (sliderId.includes('Price')) {
+                valueSpan.textContent = value.toFixed(3);
+            } else if (sliderId.includes('Pairs')) {
+                valueSpan.textContent = value;
+            } else {
+                valueSpan.textContent = value.toFixed(1);
+            }
+            
+            // Обновление цвета ползунка
+            updateSliderBackground(slider);
+        }
+
+        // Обновление фона ползунка
+        function updateSliderBackground(slider) {
+            const min = slider.min;
+            const max = slider.max;
+            const val = slider.value;
+            const percentage = ((val - min) / (max - min)) * 100;
+            slider.style.background = `linear-gradient(to right, #667eea 0%, #667eea ${percentage}%, #ddd ${percentage}%, #ddd 100%)`;
+        }
+
+        // Инициализация ползунков
+        function initializeSliders() {
+            const sliders = document.querySelectorAll('input[type="range"]');
+            sliders.forEach(slider => {
+                const valueId = slider.id.replace('Slider', 'Value');
+                updateSliderValue(slider.id, valueId);
+            });
+        }
+
+        // Заполнение выпадающих списков торговых пар
+        function populatePairSelects() {
+            const gridSelect = document.getElementById('gridPair');
+            const optSelect = document.getElementById('optPair');
+            
+            // Очистка списков
+            gridSelect.innerHTML = '';
+            optSelect.innerHTML = '';
+            
+            // Заполнение
+            loadedTradingPairs.forEach(pair => {
+                const gridOption = new Option(pair, pair);
+                const optOption = new Option(pair, pair);
+                gridSelect.add(gridOption);
+                optSelect.add(optOption);
+            });
+            
+            updatePairsDisplay();
+        }
+
+        // Обновление отображения загруженных пар
+        function updatePairsDisplay() {
+            const pairsCount = document.getElementById('pairsCount');
+            const pairsList = document.getElementById('loadedPairsList');
+            
+            pairsCount.textContent = loadedTradingPairs.length;
+            
+            pairsList.innerHTML = `
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 5px;">
+                    ${loadedTradingPairs.map((pair, index) => 
+                        `<div style="background: ${index < 10 ? '#e8f5e8' : '#f0f0f0'}; padding: 5px; border-radius: 4px; text-align: center; font-size: 0.8em; font-weight: bold;">
+                            ${pair}
+                        </div>`
+                    ).join('')}
+                </div>
+            `;
+        }
+
         // Сохранение креденциалов в localStorage
         function saveCredentials() {
             const apiKey = document.getElementById('apiKey').value;
@@ -481,9 +631,114 @@ HTML_TEMPLATE = """
             document.getElementById('apiSecret').value = apiSecret;
         }
 
+        // Загрузка торговых пар с Binance
+        async function loadTradingPairs() {
+            const creds = getCredentials();
+            if (!creds) return;
+
+            const btn = document.getElementById('loadPairsBtn');
+            const status = document.getElementById('pairsLoadStatus');
+            
+            btn.disabled = true;
+            btn.textContent = '🔄 Загрузка...';
+            status.innerHTML = '<div class="warning">⏳ Загрузка актуального списка торговых пар...</div>';
+
+            try {
+                const response = await fetch('/api/analyze', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        api_key: creds.apiKey,
+                        api_secret: creds.apiSecret,
+                        min_volume: parseInt(document.getElementById('minVolumeSlider').value),
+                        min_price: parseFloat(document.getElementById('minPriceSlider').value),
+                        max_price: parseFloat(document.getElementById('maxPriceSlider').value),
+                        max_pairs: parseInt(document.getElementById('maxPairsSlider').value)
+                    })
+                });
+
+                const data = await response.json();
+                
+                if (data.success) {
+                    loadedTradingPairs = data.pairs;
+                    populatePairSelects();
+                    
+                    status.innerHTML = `
+                        <div class="success">✅ Загружено ${data.pairs_count} торговых пар из ${data.total_pairs} доступных</div>
+                        <div style="margin-top: 10px; font-size: 0.9em; color: #666;">
+                            Фильтры: объем ≥ ${(document.getElementById('minVolumeSlider').value / 1000000).toFixed(1)}M USDT, 
+                            цена ${document.getElementById('minPriceSlider').value}$ - ${document.getElementById('maxPriceSlider').value}$
+                        </div>
+                    `;
+                    
+                    // Обновляем фильтр
+                    updateFilterDisplay();
+                    
+                    showMessage('success', `Загружен актуальный список из ${data.pairs_count} торговых пар`);
+                } else {
+                    status.innerHTML = `<div class="error">❌ Ошибка: ${data.error}</div>`;
+                    showMessage('error', data.error);
+                }
+            } catch (error) {
+                status.innerHTML = `<div class="error">❌ Ошибка сети: ${error.message}</div>`;
+                showMessage('error', 'Ошибка сети: ' + error.message);
+            }
+            
+            btn.disabled = false;
+            btn.textContent = '🔄 Загрузить торговые пары';
+        }
+
+        // Обновление отображения фильтра
+        function updateFilterDisplay() {
+            const filterContent = document.getElementById('filterContent');
+            
+            if (loadedTradingPairs.length === 0) {
+                filterContent.innerHTML = '<div class="warning">ℹ️ Сначала загрузите торговые пары во вкладке "Настройки"</div>';
+                return;
+            }
+            
+            filterContent.innerHTML = `
+                <div class="success">✅ Доступно ${loadedTradingPairs.length} торговых пар</div>
+                
+                <div class="grid" style="margin: 20px 0;">
+                    <div class="metric">
+                        <div class="metric-value">${loadedTradingPairs.length}</div>
+                        <div class="metric-label">Торговых пар</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-value">${Math.min(10, loadedTradingPairs.length)}</div>
+                        <div class="metric-label">Топ пары</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-value">${(document.getElementById('minVolumeSlider').value / 1000000).toFixed(1)}M</div>
+                        <div class="metric-label">Мин. объем USDT</div>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <h4>🏆 Загруженные торговые пары:</h4>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin-top: 15px;">
+                        ${loadedTradingPairs.map((pair, index) => 
+                            `<div style="background: ${index < 10 ? '#e8f5e8' : '#f8f9fa'}; padding: 8px; border-radius: 6px; text-align: center; font-weight: bold; border: ${index < 10 ? '2px solid #28a745' : '1px solid #dee2e6'};">
+                                <span style="color: ${index < 10 ? '#28a745' : '#667eea'};">#${index + 1}</span><br>
+                                <span style="font-size: 0.9em;">${pair}</span>
+                            </div>`
+                        ).join('')}
+                    </div>
+                    
+                    <div style="margin-top: 20px; padding: 15px; background: #e3f2fd; border-radius: 8px; border-left: 4px solid #2196f3;">
+                        <strong>💡 Совет:</strong> Пары в топ-10 (зеленые) имеют наивысший объем торгов и подходят для Grid Trading
+                    </div>
+                </div>
+            `;
+        }
+
         // Инициализация при загрузке
         window.onload = function() {
             loadCredentials();
+            initializeSliders();
+            populatePairSelects();
+            updateFilterDisplay();
         };
 
         function showTab(tabName) {
@@ -548,11 +803,11 @@ HTML_TEMPLATE = """
                         api_key: creds.apiKey,
                         api_secret: creds.apiSecret,
                         pair: document.getElementById('gridPair').value,
-                        grid_range_pct: parseFloat(document.getElementById('gridRange').value),
-                        grid_step_pct: parseFloat(document.getElementById('gridStep').value),
-                        initial_balance: parseFloat(document.getElementById('gridBalance').value),
-                        stop_loss_pct: parseFloat(document.getElementById('gridStopLoss').value),
-                        days: parseInt(document.getElementById('gridDays').value)
+                        grid_range_pct: parseFloat(document.getElementById('gridRangeSlider').value),
+                        grid_step_pct: parseFloat(document.getElementById('gridStepSlider').value),
+                        initial_balance: parseFloat(document.getElementById('gridBalanceSlider').value),
+                        stop_loss_pct: parseFloat(document.getElementById('gridStopLossSlider').value),
+                        days: parseInt(document.getElementById('gridDaysSlider').value)
                     })
                 });
 
@@ -562,12 +817,12 @@ HTML_TEMPLATE = """
                     document.getElementById('gridResults').style.display = 'block';
                     
                     const totalPnl = data.stats_long.total_pnl + data.stats_short.total_pnl;
-                    const totalPnlPct = ((totalPnl / (data.initial_balance * 2)) * 100);
+                    const totalPnlPct = ((totalPnl / (parseFloat(document.getElementById('gridBalanceSlider').value) * 2)) * 100);
                     const totalTrades = data.stats_long.trades_count + data.stats_short.trades_count;
                     const totalCommission = data.stats_long.total_commission + data.stats_short.total_commission;
                     
                     document.getElementById('gridContent').innerHTML = `
-                        <div class="success">✅ Симуляция завершена для ${data.pair}!</div>
+                        <div class="success">✅ Симуляция завершена для ${document.getElementById('gridPair').value}!</div>
                         
                         <div class="grid" style="margin: 20px 0;">
                             <div class="metric">
@@ -632,10 +887,10 @@ HTML_TEMPLATE = """
                         api_secret: creds.apiSecret,
                         pair: document.getElementById('optPair').value,
                         method: document.getElementById('optMethod').value,
-                        initial_balance: parseFloat(document.getElementById('optBalance').value),
-                        days: parseInt(document.getElementById('optDays').value),
-                        population_size: parseInt(document.getElementById('population').value),
-                        generations: parseInt(document.getElementById('generations').value)
+                        initial_balance: parseFloat(document.getElementById('optBalanceSlider').value),
+                        days: parseInt(document.getElementById('optDaysSlider').value),
+                        population_size: parseInt(document.getElementById('populationSlider').value),
+                        generations: parseInt(document.getElementById('generationsSlider').value)
                     })
                 });
 
@@ -645,7 +900,7 @@ HTML_TEMPLATE = """
                     document.getElementById('optimizationResults').style.display = 'block';
                     
                     let resultsHtml = `
-                        <div class="success">✅ Оптимизация завершена для ${data.pair}!</div>
+                        <div class="success">✅ Оптимизация завершена для ${document.getElementById('optPair').value}!</div>
                         <p><strong>Найдено ${data.results.length} вариантов параметров</strong></p>
                     `;
                     
@@ -716,50 +971,52 @@ HTML_TEMPLATE = """
             hideLoading();
         }
 
-        async function analyzePairs() {
-            const creds = getCredentials();
-            if (!creds) return;
+        function showTab(tabName) {
+            document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
+            document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+            
+            document.getElementById(tabName).classList.add('active');
+            event.target.classList.add('active');
+        }
 
-            showLoading('Анализ торговых пар...');
+        function showLoading(text = 'Обработка запроса...') {
+            document.getElementById('loadingText').textContent = text;
+            document.getElementById('loading').classList.add('show');
+        }
 
-            try {
-                const response = await fetch('/api/analyze', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        api_key: creds.apiKey,
-                        api_secret: creds.apiSecret,
-                        min_volume: parseInt(document.getElementById('minVolume').value),
-                        max_pairs: parseInt(document.getElementById('maxPairs').value)
-                    })
-                });
+        function hideLoading() {
+            document.getElementById('loading').classList.remove('show');
+        }
 
-                const data = await response.json();
-                
-                if (data.success) {
-                    document.getElementById('analysisResults').style.display = 'block';
-                    document.getElementById('analysisContent').innerHTML = `
-                        <div class="success">✅ Анализ завершен! Найдено ${data.pairs_count} пар</div>
-                        <div class="card">
-                            <h4>📋 Топ торговые пары:</h4>
-                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 15px;">
-                                ${data.pairs.slice(0, 20).map((pair, index) => 
-                                    `<div style="background: #f8f9fa; padding: 10px; border-radius: 8px; text-align: center; font-weight: bold;">
-                                        <span style="color: #667eea;">#${index + 1}</span><br>${pair}
-                                    </div>`
-                                ).join('')}
-                            </div>
-                        </div>
-                    `;
-                    showMessage('success', `Найдено ${data.pairs_count} подходящих пар`);
-                } else {
-                    showMessage('error', data.error);
+        function showMessage(type, message) {
+            hideLoading();
+            const className = type === 'error' ? 'error' : 'success';
+            const alertDiv = document.createElement('div');
+            alertDiv.className = className;
+            alertDiv.innerHTML = message;
+            
+            // Найти активную вкладку и показать сообщение
+            const activeTab = document.querySelector('.tab-content.active');
+            activeTab.insertBefore(alertDiv, activeTab.firstChild);
+            
+            // Удалить через 5 секунд
+            setTimeout(() => {
+                if (alertDiv.parentNode) {
+                    alertDiv.parentNode.removeChild(alertDiv);
                 }
-            } catch (error) {
-                showMessage('error', 'Ошибка сети: ' + error.message);
+            }, 5000);
+        }
+
+        function getCredentials() {
+            const apiKey = localStorage.getItem('binance_api_key') || '';
+            const apiSecret = localStorage.getItem('binance_api_secret') || '';
+            
+            if (!apiKey || !apiSecret) {
+                showMessage('error', 'Сначала введите API ключи во вкладке Настройки');
+                return null;
             }
             
-            hideLoading();
+            return { apiKey, apiSecret };
         }
     </script>
 </body>
@@ -775,7 +1032,11 @@ def index():
 def analyze_pairs():
     """API для анализа торговых пар"""
     try:
-        data = request.json
+        data = get_request_data(['api_key', 'api_secret', 'min_volume', 'max_pairs'])
+        
+        # Опциональные параметры с значениями по умолчанию
+        min_price = data.get('min_price', 0.001)  # Минимум $0.001
+        max_price = data.get('max_price', 100000.0)  # Максимум $100,000
         
         # Инициализация модулей
         collector = BinanceDataCollector(data['api_key'], data['api_secret'])
@@ -786,8 +1047,8 @@ def analyze_pairs():
         filtered_pairs = processor.filter_pairs_by_volume_and_price(
             all_pairs,
             min_volume=data['min_volume'],
-            min_price=data['min_price'],
-            max_price=data['max_price']
+            min_price=min_price,
+            max_price=max_price
         )
         
         pairs_to_analyze = filtered_pairs[:data['max_pairs']]
@@ -795,7 +1056,9 @@ def analyze_pairs():
         return jsonify({
             'success': True,
             'pairs_count': len(pairs_to_analyze),
-            'pairs': pairs_to_analyze
+            'pairs': pairs_to_analyze,
+            'total_pairs': len(all_pairs),
+            'filtered_pairs': len(filtered_pairs)
         })
         
     except Exception as e:
@@ -808,7 +1071,7 @@ def analyze_pairs():
 def grid_simulation():
     """API для симуляции Grid Trading"""
     try:
-        data = request.json
+        data = get_request_data(['api_key', 'api_secret', 'pair', 'initial_balance', 'grid_range_pct', 'grid_step_pct'])
         
         # Инициализация
         collector = BinanceDataCollector(data['api_key'], data['api_secret'])
@@ -846,7 +1109,7 @@ def grid_simulation():
 def optimize_parameters():
     """API для оптимизации параметров"""
     try:
-        data = request.json
+        data = get_request_data(['api_key', 'api_secret', 'pair', 'method'])
         
         # Инициализация
         collector = BinanceDataCollector(data['api_key'], data['api_secret'])
@@ -858,11 +1121,13 @@ def optimize_parameters():
         
         # Оптимизация
         if data['method'] == 'genetic':
+            population_size = data.get('population_size', 20)
+            generations = data.get('generations', 10)
             results = optimizer.optimize_genetic(
                 df=df,
                 initial_balance=1000,
-                population_size=data['population_size'],
-                generations=data['generations'],
+                population_size=population_size,
+                generations=generations,
                 max_workers=2  # Ограничиваем для Vercel
             )
         else:
@@ -900,10 +1165,56 @@ def optimize_parameters():
             'error': str(e)
         })
 
-# Для локального тестирования
-if __name__ == '__main__':
-    app.run(debug=True)
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Проверка состояния API для Railway"""
+    return jsonify({
+        'status': 'healthy',
+        'version': 'full',
+        'platform': 'Universal (Vercel/Railway)',
+        'features': [
+            'Grid Trading Simulation',
+            'Auto Optimization',
+            'Genetic Algorithm',
+            'Adaptive Grid Search',
+            'Full Analytics'
+        ],
+        'timestamp': datetime.now().isoformat()
+    })
 
-# Для Vercel
-def handler(request):
-    return app(request.environ, lambda status, headers: None)
+# Для локального тестирования и Railway
+if __name__ == '__main__':
+    import os
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port, debug=False)
+
+# Для Vercel - правильная сигнатура WSGI handler'а
+def handler(event, context):
+    """Serverless функция для Vercel"""
+    from werkzeug.wrappers import Request, Response
+    from io import StringIO
+    import sys
+    
+    # Создаем request из event
+    request = Request.from_values(
+        path=event.get('path', '/'),
+        method=event.get('httpMethod', 'GET'),
+        headers=event.get('headers', {}),
+        data=event.get('body', ''),
+        query_string=event.get('queryStringParameters', {})
+    )
+    
+    # Обрабатываем через Flask app
+    with app.test_request_context():
+        response = app.full_dispatch_request()
+        
+    return {
+        'statusCode': response.status_code,
+        'headers': dict(response.headers),
+        'body': response.get_data(as_text=True)
+    }
+
+# Альтернативный handler для совместимости
+def app_handler(environ, start_response):
+    """WSGI совместимый handler"""
+    return app(environ, start_response)

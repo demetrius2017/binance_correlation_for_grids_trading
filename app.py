@@ -153,9 +153,9 @@ saved_api_key, saved_api_secret = load_api_keys()
 
 # Создаем вкладки (всегда доступны)
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "📊 Список пар", 
-    "🔗 Информация", 
-    "💼 Настройки", 
+    "� Настройки", 
+    "� Фильтр торговых пар", 
+    "� Информация",
     "📈 Графики",
     "⚡ Grid Trading",
     "🤖 Авто-оптимизация"
@@ -165,53 +165,243 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 popular_pairs = [
     "BTCUSDT", "ETHUSDT", "BNBUSDT", "ADAUSDT", "XRPUSDT",
     "LINKUSDT", "DOTUSDT", "LTCUSDT", "UNIUSDT", "SOLUSDT",
-    "MATICUSDT", "ICXUSDT", "VETUSDT", "XLMUSDT", "TRXUSDT"
+    "MATICUSDT", "ICXUSDT", "VETUSDT", "XLMUSDT", "TRXUSDT",
+    "ATOMUSDT", "AVAXUSDT", "NEARUSDT", "AAVEUSDT", "ALGOUSDT",
+    "MANAUSDT", "SANDUSDT", "CHZUSDT", "FTMUSDT", "HBARUSDT",
+    "THETAUSDT", "IOTAUSDT", "EOSUSDT", "DYDXUSDT", "ZILUSDT"
 ]
 
-# Вкладка 1: Список пар
+# Функции для работы с сохраненными списками пар
+def save_pairs_list(pairs_list: List[str], filename: str = "saved_pairs.json") -> None:
+    """Сохраняет список пар в файл"""
+    try:
+        with open(filename, "w") as f:
+            json.dump(pairs_list, f)
+        st.success(f"Список из {len(pairs_list)} пар сохранен!")
+    except Exception as e:
+        st.error(f"Ошибка при сохранении: {e}")
+
+def load_pairs_list(filename: str = "saved_pairs.json") -> List[str]:
+    """Загружает список пар из файла"""
+    try:
+        if os.path.exists(filename):
+            with open(filename, "r") as f:
+                pairs = json.load(f)
+            return pairs
+        else:
+            return popular_pairs
+    except Exception as e:
+        st.error(f"Ошибка при загрузке: {e}")
+        return popular_pairs
+
+# Вкладка 1: Настройки и фильтр пар
 with tab1:
-    st.header("Список торговых пар")
+    st.header("💼 Настройки системы")
+    
+    # Секция настроек фильтрации пар
+    st.subheader("🔍 Фильтр торговых пар")
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.write("**Управление списком торговых пар:**")
+        
+        # Загружаем сохраненный список
+        if 'saved_pairs' not in st.session_state:
+            st.session_state.saved_pairs = load_pairs_list()
+        
+        # Показываем текущий список
+        pairs_text = "\n".join(st.session_state.saved_pairs)
+        
+        # Текстовое поле для редактирования списка пар
+        edited_pairs_text = st.text_area(
+            "Список торговых пар (по одной на строку):",
+            value=pairs_text,
+            height=200,
+            help="Введите символы торговых пар, по одному на строку. Например: BTCUSDT"
+        )
+        
+    with col2:
+        st.write("**Действия:**")
+        
+        if st.button("💾 Сохранить список", use_container_width=True):
+            new_pairs = [pair.strip().upper() for pair in edited_pairs_text.split('\n') if pair.strip()]
+            st.session_state.saved_pairs = new_pairs
+            save_pairs_list(new_pairs)
+        
+        if st.button("🔄 Загрузить из файла", use_container_width=True):
+            st.session_state.saved_pairs = load_pairs_list()
+            st.success("Список загружен из файла!")
+            st.rerun()
+        
+        if st.button("🔧 Сбросить к умолчанию", use_container_width=True):
+            st.session_state.saved_pairs = popular_pairs.copy()
+            st.success("Список сброшен к умолчанию!")
+            st.rerun()
+        
+        st.info(f"Текущий список: {len(st.session_state.saved_pairs)} пар")
+    
+    st.markdown("---")
+    
+    # Основные параметры анализа с ползунками
+    st.subheader("📊 Параметры анализа")
+    
+    col_a, col_b = st.columns(2)
+    
+    with col_a:
+        min_volume = st.slider(
+            "Мин. объем торгов (млн USDT)", 
+            min_value=1, 
+            max_value=1000, 
+            value=10,
+            step=1,
+            help="Минимальный объем торгов за 24 часа в миллионах USDT"
+        )
+        min_volume = min_volume * 1000000  # Конвертируем в USDT
+        
+        min_price = st.slider(
+            "Мин. цена (USDT)", 
+            min_value=0.0001, 
+            max_value=10.0, 
+            value=0.01,
+            step=0.0001,
+            format="%.4f",
+            help="Минимальная цена актива"
+        )
+        
+    with col_b:
+        max_price = st.slider(
+            "Макс. цена (USDT)", 
+            min_value=1.0, 
+            max_value=10000.0, 
+            value=100.0,
+            step=1.0,
+            help="Максимальная цена актива"
+        )
+        
+        max_pairs = st.slider(
+            "Количество пар для анализа", 
+            min_value=5, 
+            max_value=100, 
+            value=30,
+            help="Максимальное количество пар для детального анализа"
+        )
+    
+    st.markdown("---")
+    
+    # Отображение текущих настроек
+    st.subheader("📋 Текущие параметры")
+    
+    col_info1, col_info2 = st.columns(2)
+    
+    with col_info1:
+        st.metric("Минимальный объем", f"${min_volume:,}")
+        st.metric("Диапазон цен", f"${min_price:.4f} - ${max_price:.2f}")
+    
+    with col_info2:
+        st.metric("Максимум пар", max_pairs)
+        st.metric("Пар в списке", len(st.session_state.saved_pairs))
+
+# Вкладка 2: Фильтр торговых пар
+with tab2:
+    st.header("🔍 Фильтр торговых пар")
     
     if start_analysis:
-        st.subheader("Результаты анализа появятся здесь после запуска")
+        st.subheader("Результаты фильтрации появятся здесь после запуска")
         
-    st.subheader("Доступные пары для анализа")
-    pairs_df = pd.DataFrame({
-        'Символ': popular_pairs[:max_pairs],
-        'Описание': [f"Торговая пара {pair}" for pair in popular_pairs[:max_pairs]]
-    })
-    
-    st.dataframe(pairs_df, use_container_width=True)
-    st.success(f"Всего пар: {len(popular_pairs[:max_pairs])}")
+        # Здесь будут отображаться результаты анализа после запуска
+        
+    else:
+        st.subheader("Текущий список пар для анализа")
+        
+        # Используем сохраненный список пар
+        current_pairs = st.session_state.saved_pairs if 'saved_pairs' in st.session_state else popular_pairs
+        
+        # Ограничиваем количество отображаемых пар
+        display_pairs = current_pairs[:max_pairs]
+        
+        pairs_df = pd.DataFrame({
+            'Символ': display_pairs,
+            'Описание': [f"Торговая пара {pair}" for pair in display_pairs],
+            'Статус': ['✅ Готов к анализу'] * len(display_pairs)
+        })
+        
+        st.dataframe(pairs_df, use_container_width=True)
+        st.info(f"Отображено {len(display_pairs)} из {len(current_pairs)} пар в списке")
+        
+        if len(current_pairs) > max_pairs:
+            st.warning(f"В списке {len(current_pairs)} пар, но для анализа выбрано только {max_pairs}. Увеличьте лимит в настройках или уменьшите список пар.")
 
-# Вкладка 2: Информация
-with tab2:
-    st.header("Информация о системе")
-    
-    st.subheader("Реальные комиссии Binance")
-    st.write(f"**Maker:** {MAKER_COMMISSION_RATE*100:.3f}%")
-    st.write(f"**Taker:** {TAKER_COMMISSION_RATE*100:.3f}%")
-    
-    st.subheader("Возможности системы")
-    st.write("✅ Анализ торговых пар")
-    st.write("✅ Симуляция Grid Trading с реальными комиссиями") 
-    st.write("✅ Часовые и дневные данные")
-    st.write("✅ Различные стратегии стоп-лосса")
-
-# Вкладка 3: Настройки
+# Вкладка 3: Информация
 with tab3:
-    st.header("Настройки анализа")
+    st.header("🔗 Информация о системе")
     
-    st.subheader("Текущие параметры")
-    st.write(f"Минимальный объем: ${min_volume:,}")
-    st.write(f"Диапазон цен: ${min_price:.4f} - ${max_price:.2f}")
-    st.write(f"Максимум пар: {max_pairs}")
+    st.subheader("📈 Реальные комиссии Binance")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Maker комиссия", f"{MAKER_COMMISSION_RATE*100:.3f}%", help="Комиссия за создание ордеров")
+    with col2:
+        st.metric("Taker комиссия", f"{TAKER_COMMISSION_RATE*100:.3f}%", help="Комиссия за исполнение ордеров")
+    
+    st.markdown("---")
+    
+    st.subheader("🚀 Возможности системы")
+    
+    features = [
+        ("✅ Анализ торговых пар", "Фильтрация и ранжирование пар по объему и цене"),
+        ("✅ Симуляция Grid Trading", "Тестирование сеточной торговли с реальными комиссиями"),
+        ("✅ Множественные таймфреймы", "Поддержка 15m, 1h, 4h, 1d данных"),
+        ("✅ Стратегии стоп-лосса", "Различные варианты управления рисками"),
+        ("✅ Авто-оптимизация", "Генетические алгоритмы для поиска лучших параметров"),
+        ("✅ Персистентные настройки", "Сохранение и загрузка списков пар и настроек")
+    ]
+    
+    for emoji_title, description in features:
+        with st.container():
+            st.write(f"**{emoji_title}**")
+            st.write(f"   {description}")
+    
+    st.markdown("---")
+    
+    st.subheader("📚 Инструкция по использованию")
+    with st.expander("Как начать работу"):
+        st.write("""
+        1. **Настройте API ключи** в боковой панели (получите их на Binance)
+        2. **Настройте параметры** в первой вкладке "Настройки"
+        3. **Отредактируйте список пар** для анализа в той же вкладке
+        4. **Запустите анализ** кнопкой в боковой панели
+        5. **Просмотрите результаты** во вкладке "Фильтр торговых пар"
+        6. **Протестируйте Grid Trading** во вкладке "Grid Trading"
+        7. **Оптимизируйте параметры** во вкладке "Авто-оптимизация"
+        """)
+    
+    with st.expander("О Grid Trading"):
+        st.write("""
+        Grid Trading (сеточная торговля) - это стратегия, которая размещает ордера на покупку и продажу 
+        через равные интервалы цены вокруг установленной базовой цены, создавая "сетку" ордеров.
+        
+        **Преимущества:**
+        - Может быть прибыльной в боковых рынках
+        - Автоматизирует торговлю
+        - Позволяет получать прибыль от волатильности
+        
+        **Риски:**
+        - Может привести к убыткам в трендовых рынках
+        - Требует достаточного капитала
+        - Комиссии могут съедать прибыль
+        """)
 
-# Вкладка 4: Графики
+# Вкладка 4: Графики цен
 with tab4:
-    st.header("Графики цен")
+    st.header("📈 Графики цен")
     
-    selected_symbol = st.selectbox("Выберите актив для просмотра", popular_pairs, key="chart_symbol")
+    current_pairs_for_chart = st.session_state.saved_pairs if 'saved_pairs' in st.session_state else popular_pairs
+    selected_symbol = st.selectbox(
+        "Выберите актив для просмотра", 
+        current_pairs_for_chart, 
+        key="chart_symbol",
+        help=f"Доступно {len(current_pairs_for_chart)} пар из сохраненного списка"
+    )
     
     if selected_symbol and api_key and api_secret:
         try:
@@ -271,12 +461,12 @@ with tab5:
         )
         
     with col3:
-        initial_balance = st.number_input(
+        initial_balance = st.slider(
             "Начальный баланс (USDT)",
-            min_value=100.0,
-            max_value=100000.0,
-            value=1000.0,
-            step=100.0,
+            min_value=100,
+            max_value=50000,
+            value=1000,
+            step=100,
             help="Начальный капитал для симуляции"
         )
 
@@ -312,10 +502,12 @@ with tab5:
         )
 
     # Выбор пары для симуляции
+    current_pairs_for_grid = st.session_state.saved_pairs if 'saved_pairs' in st.session_state else popular_pairs
     selected_pair_for_grid = st.selectbox(
         "Выберите пару для симуляции",
-        popular_pairs,
-        key="selected_pair_for_grid"
+        current_pairs_for_grid,
+        key="selected_pair_for_grid",
+        help=f"Доступно {len(current_pairs_for_grid)} пар из сохраненного списка"
     )
 
     if st.button("Запустить симуляцию для выбранной пары"):
@@ -430,18 +622,21 @@ with tab6:
     col1, col2, col3 = st.columns(3)
     
     with col1:
+        current_pairs_for_opt = st.session_state.saved_pairs if 'saved_pairs' in st.session_state else popular_pairs
         opt_pair = st.selectbox(
             "Пара для оптимизации",
-            popular_pairs,
-            key="opt_pair"
+            current_pairs_for_opt,
+            key="opt_pair",
+            help=f"Доступно {len(current_pairs_for_opt)} пар из сохраненного списка"
         )
         
-        opt_balance = st.number_input(
+        opt_balance = st.slider(
             "Баланс для тестов (USDT)",
-            min_value=100.0,
-            max_value=10000.0,
-            value=1000.0,
-            step=100.0
+            min_value=100,
+            max_value=10000,
+            value=1000,
+            step=100,
+            help="Начальный капитал для тестирования стратегий"
         )
     
     with col2:
@@ -681,15 +876,34 @@ if start_analysis:
             pairs_to_analyze = filtered_pairs[:max_pairs]
             log_container.success(f"Отобрано {len(pairs_to_analyze)} пар для анализа.")
             
-            # Обновляем вкладку 1 с отфильтрованными парами
-            with tab1:
+            # Сохраняем результаты фильтрации в session_state
+            st.session_state.filtered_pairs = pairs_to_analyze
+            
+            # Обновляем вкладку 2 с отфильтрованными парами
+            with tab2:
                 st.empty() # Очищаем предыдущий контент
-                st.subheader("Отфильтрованные пары для анализа")
+                st.subheader("✅ Результаты фильтрации")
+                
+                col_res1, col_res2, col_res3 = st.columns(3)
+                with col_res1:
+                    st.metric("Всего пар USDT", len(all_pairs))
+                with col_res2:
+                    st.metric("Прошли фильтр", len(filtered_pairs))
+                with col_res3:
+                    st.metric("Выбрано для анализа", len(pairs_to_analyze))
+                
                 pairs_df = pd.DataFrame({
                     'Символ': pairs_to_analyze,
-                    'Описание': [f"Торговая пара {p}" for p in pairs_to_analyze]
+                    'Описание': [f"Торговая пара {p}" for p in pairs_to_analyze],
+                    'Статус': ['✅ Готов к Grid Trading'] * len(pairs_to_analyze)
                 })
                 st.dataframe(pairs_df, use_container_width=True)
+                
+                # Кнопка для сохранения отфильтрованного списка
+                if st.button("💾 Сохранить отфильтрованный список как основной"):
+                    st.session_state.saved_pairs = pairs_to_analyze
+                    save_pairs_list(pairs_to_analyze)
+                    st.success("Отфильтрованный список сохранен как основной!")
             
             # Здесь можно добавить дальнейшую логику анализа, если требуется
             # Например, расчет корреляций и построение портфеля

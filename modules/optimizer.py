@@ -1,10 +1,11 @@
 """
 Модуль автоматической оптимизации параметров Grid Trading с использованием генетического алгоритма.
-Оптимизированная версия для Vercel (без pandas).
+Полная версия для Railway.
 """
 
 import random
 import numpy as np
+import pandas as pd
 from typing import List, Dict, Tuple, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -96,8 +97,8 @@ class GridOptimizer:
             stop_loss_pct=random.choice([parent1.stop_loss_pct, parent2.stop_loss_pct])
         )
         
-    def evaluate_params(self, params: OptimizationParams, backtest_data: List[Dict], 
-                       forward_data: List[Dict], initial_balance: float) -> OptimizationResult:
+    def evaluate_params(self, params: OptimizationParams, backtest_df: pd.DataFrame, 
+                       forward_df: pd.DataFrame, initial_balance: float) -> OptimizationResult:
         """Оценка параметров на бэктесте и форвард тесте"""
         
         try:
@@ -105,7 +106,7 @@ class GridOptimizer:
             stop_loss = params.stop_loss_pct if params.stop_loss_pct > 0 else None
             
             stats_long_bt, stats_short_bt, _, _ = self.grid_analyzer.estimate_dual_grid_by_candles_realistic(
-                df=backtest_data,
+                df=backtest_df,
                 initial_balance_long=initial_balance,
                 initial_balance_short=initial_balance,
                 grid_range_pct=params.grid_range_pct,
@@ -119,7 +120,7 @@ class GridOptimizer:
             
             # Форвард тест
             stats_long_ft, stats_short_ft, _, _ = self.grid_analyzer.estimate_dual_grid_by_candles_realistic(
-                df=forward_data,
+                df=forward_df,
                 initial_balance_long=initial_balance,
                 initial_balance_short=initial_balance,
                 grid_range_pct=params.grid_range_pct,
@@ -168,7 +169,7 @@ class GridOptimizer:
                 drawdown=100.0
             )
     
-    def optimize_genetic(self, data: List[Dict], initial_balance: float, 
+    def optimize_genetic(self, df: pd.DataFrame, initial_balance: float, 
                         population_size=50, generations=20, 
                         forward_test_pct=0.3, max_workers=4,
                         progress_callback=None) -> List[OptimizationResult]:
@@ -176,7 +177,7 @@ class GridOptimizer:
         Генетический алгоритм оптимизации параметров
         
         Args:
-            data: Исторические данные в виде списка словарей
+            df: Исторические данные DataFrame
             initial_balance: Начальный баланс
             population_size: Размер популяции
             generations: Количество поколений
@@ -186,12 +187,12 @@ class GridOptimizer:
         """
         
         # Разделение данных на бэктест и форвард тест
-        split_idx = int(len(data) * (1 - forward_test_pct))
-        backtest_data = data[:split_idx]
-        forward_data = data[split_idx:]
+        split_idx = int(len(df) * (1 - forward_test_pct))
+        backtest_df = df.iloc[:split_idx].copy()
+        forward_df = df.iloc[split_idx:].copy()
         
         if progress_callback:
-            progress_callback(f"Разделение данных: {len(backtest_data)} точек для бэктеста, {len(forward_data)} для форвард теста")
+            progress_callback(f"Разделение данных: {len(backtest_df)} точек для бэктеста, {len(forward_df)} для форвард теста")
         
         # Создание начальной популяции
         population = [self.create_random_params() for _ in range(population_size)]
@@ -209,8 +210,8 @@ class GridOptimizer:
                     executor.submit(
                         self.evaluate_params, 
                         params, 
-                        backtest_data, 
-                        forward_data, 
+                        backtest_df, 
+                        forward_df, 
                         initial_balance
                     ): params for params in population
                 }
@@ -254,14 +255,14 @@ class GridOptimizer:
         best_results.sort(key=lambda x: x.combined_score, reverse=True)
         return best_results
     
-    def grid_search_adaptive(self, data: List[Dict], initial_balance: float,
+    def grid_search_adaptive(self, df: pd.DataFrame, initial_balance: float,
                            forward_test_pct=0.3, iterations=3, 
                            points_per_iteration=50, progress_callback=None) -> List[OptimizationResult]:
         """
         Адаптивный поиск по сетке с уменьшающимися диапазонами
         
         Args:
-            data: Исторические данные в виде списка словарей
+            df: Исторические данные DataFrame
             initial_balance: Начальный баланс
             forward_test_pct: Процент данных для форвард теста
             iterations: Количество итераций уточнения
@@ -270,9 +271,9 @@ class GridOptimizer:
         """
         
         # Разделение данных
-        split_idx = int(len(data) * (1 - forward_test_pct))
-        backtest_data = data[:split_idx]
-        forward_data = data[split_idx:]
+        split_idx = int(len(df) * (1 - forward_test_pct))
+        backtest_df = df.iloc[:split_idx].copy()
+        forward_df = df.iloc[split_idx:].copy()
         
         # Текущие границы поиска
         current_bounds = self.param_bounds.copy()
@@ -299,8 +300,8 @@ class GridOptimizer:
                     executor.submit(
                         self.evaluate_params, 
                         params, 
-                        backtest_data, 
-                        forward_data, 
+                        backtest_df, 
+                        forward_df, 
                         initial_balance
                     ): params for params in test_params
                 }

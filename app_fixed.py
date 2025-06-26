@@ -186,30 +186,104 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "🤖 Авто-оптимизация"
 ])
 
-# Добавляем стили для улучшения интерфейса вкладок
+# Добавляем стили для улучшения интерфейса вкладок (поддержка светлой и темной темы)
 st.markdown("""
 <style>
+/* Основные стили для вкладок */
 .stTabs [data-baseweb="tab-list"] button [data-testid="stMarkdownContainer"] p {
     font-size: 14px;
     font-weight: bold;
+    margin: 0;
 }
+
 .stTabs [data-baseweb="tab-list"] {
     gap: 2px;
 }
+
 .stTabs [data-baseweb="tab-list"] button {
     height: 50px;
     white-space: pre-wrap;
-    background-color: #f0f2f6;
     border-radius: 4px 4px 0px 0px;
     gap: 4px;
-    padding-top: 10px;
-    padding-bottom: 10px;
-    border: 1px solid #d0d0d0;
+    padding: 10px 15px;
+    border: 1px solid transparent;
+    transition: all 0.2s ease;
 }
-.stTabs [data-baseweb="tab-list"] button[aria-selected="true"] {
-    background-color: #ff4b4b;
-    color: white;
-    border: 1px solid #ff4b4b;
+
+/* Светлая тема */
+@media (prefers-color-scheme: light) {
+    .stTabs [data-baseweb="tab-list"] button {
+        background-color: #f0f2f6;
+        color: #262730;
+        border-color: #d0d0d0;
+    }
+    
+    .stTabs [data-baseweb="tab-list"] button:hover {
+        background-color: #e8eaf0;
+        border-color: #bbb;
+    }
+    
+    .stTabs [data-baseweb="tab-list"] button[aria-selected="true"] {
+        background-color: #ff4b4b;
+        color: white;
+        border-color: #ff4b4b;
+    }
+}
+
+/* Темная тема */
+@media (prefers-color-scheme: dark) {
+    .stTabs [data-baseweb="tab-list"] button {
+        background-color: #2b2b2b;
+        color: #fafafa;
+        border-color: #4a4a4a;
+    }
+    
+    .stTabs [data-baseweb="tab-list"] button:hover {
+        background-color: #3a3a3a;
+        border-color: #666;
+    }
+    
+    .stTabs [data-baseweb="tab-list"] button[aria-selected="true"] {
+        background-color: #ff4b4b;
+        color: white;
+        border-color: #ff4b4b;
+    }
+}
+
+/* Принудительные стили для темной темы Streamlit */
+[data-theme="dark"] .stTabs [data-baseweb="tab-list"] button {
+    background-color: #2b2b2b !important;
+    color: #fafafa !important;
+    border-color: #4a4a4a !important;
+}
+
+[data-theme="dark"] .stTabs [data-baseweb="tab-list"] button:hover {
+    background-color: #3a3a3a !important;
+    border-color: #666 !important;
+}
+
+[data-theme="dark"] .stTabs [data-baseweb="tab-list"] button[aria-selected="true"] {
+    background-color: #ff4b4b !important;
+    color: white !important;
+    border-color: #ff4b4b !important;
+}
+
+/* Дополнительные селекторы для темной темы */
+.stApp[data-theme="dark"] .stTabs [data-baseweb="tab-list"] button {
+    background-color: #2b2b2b !important;
+    color: #fafafa !important;
+    border-color: #4a4a4a !important;
+}
+
+.stApp[data-theme="dark"] .stTabs [data-baseweb="tab-list"] button:hover {
+    background-color: #3a3a3a !important;
+    border-color: #666 !important;
+}
+
+.stApp[data-theme="dark"] .stTabs [data-baseweb="tab-list"] button[aria-selected="true"] {
+    background-color: #ff4b4b !important;
+    color: white !important;
+    border-color: #ff4b4b !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -956,10 +1030,11 @@ if start_analysis:
         if not api_key or not api_secret:
             st.error("❌ Введите API ключи для начала анализа.")
         else:
+            # Прогресс анализа
+            progress_analysis = st.progress(0)
+            status_analysis = st.empty()
+            
             try:
-                # Прогресс анализа
-                progress_analysis = st.progress(0)
-                status_analysis = st.empty()
                 
                 # Инициализация классов
                 status_analysis.info("🔧 Инициализация модулей...")

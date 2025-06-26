@@ -177,30 +177,103 @@ tab1, tab2, tab3, tab4 = st.tabs([
     "🤖 Авто-оптимизация"
 ])
 
-# Добавляем стили для улучшения интерфейса вкладок
+# Добавляем улучшенные стили для вкладок (поддержка светлой и темной темы)
 st.markdown("""
 <style>
+/* Стили для вкладок - универсальные для светлой и темной темы */
 .stTabs [data-baseweb="tab-list"] button [data-testid="stMarkdownContainer"] p {
     font-size: 14px;
     font-weight: bold;
+    color: inherit;
 }
+
 .stTabs [data-baseweb="tab-list"] {
-    gap: 2px;
+    gap: 3px;
+    margin-bottom: 1rem;
 }
+
 .stTabs [data-baseweb="tab-list"] button {
     height: 50px;
     white-space: pre-wrap;
-    background-color: #f0f2f6;
-    border-radius: 4px 4px 0px 0px;
+    border-radius: 8px 8px 0px 0px;
     gap: 4px;
-    padding-top: 10px;
-    padding-bottom: 10px;
-    border: 1px solid #d0d0d0;
+    padding: 10px 16px;
+    border: 2px solid transparent;
+    transition: all 0.3s ease;
+    font-weight: 600;
 }
+
+/* Светлая тема */
+@media (prefers-color-scheme: light) {
+    .stTabs [data-baseweb="tab-list"] button {
+        background-color: #f8f9fa;
+        color: #495057;
+        border-color: #dee2e6;
+    }
+    
+    .stTabs [data-baseweb="tab-list"] button:hover {
+        background-color: #e9ecef;
+        color: #212529;
+        border-color: #adb5bd;
+    }
+    
+    .stTabs [data-baseweb="tab-list"] button[aria-selected="true"] {
+        background-color: #ff4b4b;
+        color: white;
+        border-color: #ff4b4b;
+        box-shadow: 0 4px 8px rgba(255, 75, 75, 0.3);
+    }
+}
+
+/* Темная тема */
+@media (prefers-color-scheme: dark) {
+    .stTabs [data-baseweb="tab-list"] button {
+        background-color: #2d3748;
+        color: #e2e8f0;
+        border-color: #4a5568;
+    }
+    
+    .stTabs [data-baseweb="tab-list"] button:hover {
+        background-color: #4a5568;
+        color: #f7fafc;
+        border-color: #718096;
+    }
+    
+    .stTabs [data-baseweb="tab-list"] button[aria-selected="true"] {
+        background-color: #ff4b4b;
+        color: white;
+        border-color: #ff4b4b;
+        box-shadow: 0 4px 8px rgba(255, 75, 75, 0.4);
+    }
+}
+
+/* Принудительные стили для темной темы Streamlit */
+[data-theme="dark"] .stTabs [data-baseweb="tab-list"] button {
+    background-color: #2d3748 !important;
+    color: #e2e8f0 !important;
+    border-color: #4a5568 !important;
+}
+
+[data-theme="dark"] .stTabs [data-baseweb="tab-list"] button:hover {
+    background-color: #4a5568 !important;
+    color: #f7fafc !important;
+    border-color: #718096 !important;
+}
+
+[data-theme="dark"] .stTabs [data-baseweb="tab-list"] button[aria-selected="true"] {
+    background-color: #ff4b4b !important;
+    color: white !important;
+    border-color: #ff4b4b !important;
+    box-shadow: 0 4px 8px rgba(255, 75, 75, 0.4) !important;
+}
+
+/* Дополнительная защита от засвеченности */
+.stTabs [data-baseweb="tab-list"] button {
+    opacity: 0.9;
+}
+
 .stTabs [data-baseweb="tab-list"] button[aria-selected="true"] {
-    background-color: #ff4b4b;
-    color: white;
-    border: 1px solid #ff4b4b;
+    opacity: 1;
 }
 </style>
 """, unsafe_allow_html=True)

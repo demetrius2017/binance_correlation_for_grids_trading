@@ -1,5 +1,4 @@
-# Полные зависимости для Railway (без ограничений размера)
-flask>=2.3.0
+# Railway deployment requirements
 streamlit>=1.28.0
 python-binance>=1.0.0
 pandas>=1.5.0

@@ -10,6 +10,8 @@ from typing import List, Dict, Any, Tuple
 
 import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')  # Для headless окружения (Railway, Heroku и т.д.)
 import matplotlib.pyplot as plt
 import seaborn as sns
 import streamlit as st
@@ -69,6 +71,16 @@ st.set_page_config(
     layout="wide"
 )
 
+# Инициализация состояния сессии
+if 'api_keys_saved' not in st.session_state:
+    st.session_state.api_keys_saved = False
+
+if 'saved_pairs' not in st.session_state:
+    st.session_state.saved_pairs = []
+
+if 'filtered_pairs' not in st.session_state:
+    st.session_state.filtered_pairs = []
+
 # Заголовок приложения
 st.title("Анализатор торговых пар Binance")
 st.markdown("---")
@@ -96,10 +108,25 @@ with st.sidebar:
     # Кнопка для сохранения ключей
     if st.button("Сохранить ключи"):
         if api_key and api_secret:
-            save_api_keys(api_key, api_secret)
-            st.success("API ключи сохранены!")
+            try:
+                save_api_keys(api_key, api_secret)
+                st.session_state.api_keys_saved = True
+                st.success("API ключи успешно сохранены!")
+                # Принудительно обновляем интерфейс
+                time.sleep(1)
+                st.rerun()
+            except Exception as e:
+                st.error(f"Ошибка при сохранении ключей: {e}")
         else:
             st.error("Введите оба ключа для сохранения")
+    
+    # Показываем статус сохранения ключей
+    if st.session_state.api_keys_saved or (api_key and api_secret):
+        st.success("✅ API ключи настроены")
+    elif not api_key and not api_secret:
+        st.warning("⚠️ Введите API ключи для работы с Binance")
+    else:
+        st.info("💡 Нажмите 'Сохранить ключи' после ввода")
     
     st.markdown("---")
     
@@ -153,13 +180,41 @@ saved_api_key, saved_api_secret = load_api_keys()
 
 # Создаем вкладки (всегда доступны)
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "� Настройки", 
-    "� Фильтр торговых пар", 
-    "� Информация",
+    "⚙️ Настройки", 
+    "🔍 Фильтр торговых пар", 
+    "ℹ️ Информация",
     "📈 Графики",
     "⚡ Grid Trading",
     "🤖 Авто-оптимизация"
 ])
+
+# Добавляем стили для улучшения интерфейса вкладок
+st.markdown("""
+<style>
+.stTabs [data-baseweb="tab-list"] button [data-testid="stMarkdownContainer"] p {
+    font-size: 14px;
+    font-weight: bold;
+}
+.stTabs [data-baseweb="tab-list"] {
+    gap: 2px;
+}
+.stTabs [data-baseweb="tab-list"] button {
+    height: 50px;
+    white-space: pre-wrap;
+    background-color: #f0f2f6;
+    border-radius: 4px 4px 0px 0px;
+    gap: 4px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+    border: 1px solid #d0d0d0;
+}
+.stTabs [data-baseweb="tab-list"] button[aria-selected="true"] {
+    background-color: #ff4b4b;
+    color: white;
+    border: 1px solid #ff4b4b;
+}
+</style>
+""", unsafe_allow_html=True)
 
 # Предопределенный список популярных пар для всех вкладок
 popular_pairs = [
@@ -198,6 +253,31 @@ def load_pairs_list(filename: str = "saved_pairs.json") -> List[str]:
 with tab1:
     st.header("💼 Настройки системы")
     
+    # Индикатор состояния
+    st.subheader("📊 Статус системы")
+    col_status1, col_status2, col_status3 = st.columns(3)
+    
+    with col_status1:
+        if api_key and api_secret:
+            st.success("🔑 API ключи настроены")
+        else:
+            st.error("🔑 API ключи не настроены")
+    
+    with col_status2:
+        pairs_count = len(st.session_state.saved_pairs) if st.session_state.saved_pairs else 0
+        if pairs_count > 0:
+            st.success(f"📋 {pairs_count} пар загружено")
+        else:
+            st.warning("📋 Список пар пустой")
+    
+    with col_status3:
+        if st.session_state.api_keys_saved:
+            st.success("💾 Настройки сохранены")
+        else:
+            st.info("💾 Настройки не сохранены")
+    
+    st.markdown("---")
+    
     # Секция настроек фильтрации пар
     st.subheader("🔍 Фильтр торговых пар")
     
@@ -207,7 +287,7 @@ with tab1:
         st.write("**Управление списком торговых пар:**")
         
         # Загружаем сохраненный список
-        if 'saved_pairs' not in st.session_state:
+        if not st.session_state.saved_pairs:
             st.session_state.saved_pairs = load_pairs_list()
         
         # Показываем текущий список
@@ -226,17 +306,28 @@ with tab1:
         
         if st.button("💾 Сохранить список", use_container_width=True):
             new_pairs = [pair.strip().upper() for pair in edited_pairs_text.split('\n') if pair.strip()]
-            st.session_state.saved_pairs = new_pairs
-            save_pairs_list(new_pairs)
+            if new_pairs:
+                st.session_state.saved_pairs = new_pairs
+                save_pairs_list(new_pairs)
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error("Список пар не может быть пустым")
         
         if st.button("🔄 Загрузить из файла", use_container_width=True):
-            st.session_state.saved_pairs = load_pairs_list()
-            st.success("Список загружен из файла!")
-            st.rerun()
+            loaded_pairs = load_pairs_list()
+            if loaded_pairs:
+                st.session_state.saved_pairs = loaded_pairs
+                st.success("Список загружен из файла!")
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error("Не удалось загрузить список из файла")
         
         if st.button("🔧 Сбросить к умолчанию", use_container_width=True):
             st.session_state.saved_pairs = popular_pairs.copy()
             st.success("Список сброшен к умолчанию!")
+            time.sleep(1)
             st.rerun()
         
         st.info(f"Текущий список: {len(st.session_state.saved_pairs)} пар")
@@ -249,7 +340,7 @@ with tab1:
     col_a, col_b = st.columns(2)
     
     with col_a:
-        min_volume = st.slider(
+        min_volume_slider = st.slider(
             "Мин. объем торгов (млн USDT)", 
             min_value=1, 
             max_value=1000, 
@@ -257,9 +348,9 @@ with tab1:
             step=1,
             help="Минимальный объем торгов за 24 часа в миллионах USDT"
         )
-        min_volume = min_volume * 1000000  # Конвертируем в USDT
+        min_volume_calc = min_volume_slider * 1000000  # Конвертируем в USDT
         
-        min_price = st.slider(
+        min_price_slider = st.slider(
             "Мин. цена (USDT)", 
             min_value=0.0001, 
             max_value=10.0, 
@@ -270,7 +361,7 @@ with tab1:
         )
         
     with col_b:
-        max_price = st.slider(
+        max_price_slider = st.slider(
             "Макс. цена (USDT)", 
             min_value=1.0, 
             max_value=10000.0, 
@@ -279,7 +370,7 @@ with tab1:
             help="Максимальная цена актива"
         )
         
-        max_pairs = st.slider(
+        max_pairs_slider = st.slider(
             "Количество пар для анализа", 
             min_value=5, 
             max_value=100, 
@@ -295,11 +386,11 @@ with tab1:
     col_info1, col_info2 = st.columns(2)
     
     with col_info1:
-        st.metric("Минимальный объем", f"${min_volume:,}")
-        st.metric("Диапазон цен", f"${min_price:.4f} - ${max_price:.2f}")
+        st.metric("Минимальный объем", f"${min_volume_calc:,}")
+        st.metric("Диапазон цен", f"${min_price_slider:.4f} - ${max_price_slider:.2f}")
     
     with col_info2:
-        st.metric("Максимум пар", max_pairs)
+        st.metric("Максимум пар", max_pairs_slider)
         st.metric("Пар в списке", len(st.session_state.saved_pairs))
 
 # Вкладка 2: Фильтр торговых пар
@@ -307,15 +398,14 @@ with tab2:
     st.header("🔍 Фильтр торговых пар")
     
     if start_analysis:
-        st.subheader("Результаты фильтрации появятся здесь после запуска")
-        
-        # Здесь будут отображаться результаты анализа после запуска
+        st.subheader("🔄 Запуск анализа...")
+        st.info("Результаты анализа будут отображены здесь")
         
     else:
-        st.subheader("Текущий список пар для анализа")
+        st.subheader("📋 Текущий список пар для анализа")
         
         # Используем сохраненный список пар
-        current_pairs = st.session_state.saved_pairs if 'saved_pairs' in st.session_state else popular_pairs
+        current_pairs = st.session_state.saved_pairs if st.session_state.saved_pairs else popular_pairs
         
         # Ограничиваем количество отображаемых пар
         display_pairs = current_pairs[:max_pairs]
@@ -395,7 +485,7 @@ with tab3:
 with tab4:
     st.header("📈 Графики цен")
     
-    current_pairs_for_chart = st.session_state.saved_pairs if 'saved_pairs' in st.session_state else popular_pairs
+    current_pairs_for_chart = st.session_state.saved_pairs if st.session_state.saved_pairs else popular_pairs
     selected_symbol = st.selectbox(
         "Выберите актив для просмотра", 
         current_pairs_for_chart, 
@@ -405,38 +495,50 @@ with tab4:
     
     if selected_symbol and api_key and api_secret:
         try:
-            collector = BinanceDataCollector(api_key, api_secret)
-            df = collector.get_historical_data(selected_symbol, "1d", 90)
+            with st.spinner(f"Загрузка данных для {selected_symbol}..."):
+                collector = BinanceDataCollector(api_key, api_secret)
+                df = collector.get_historical_data(selected_symbol, "1d", 90)
+            
             if not df.empty:
                 # График цены
                 fig, ax = plt.subplots(figsize=(12, 6))
-                ax.plot(df.index, df['close'], linewidth=2)
-                ax.set_title(f"График цены {selected_symbol} за последние 90 дней")
+                ax.plot(df.index, df['close'], linewidth=2, color='#ff4b4b')
+                ax.set_title(f"График цены {selected_symbol} за последние 90 дней", fontsize=16, fontweight='bold')
                 ax.set_xlabel("Дата")
                 ax.set_ylabel("Цена (USDT)")
                 ax.grid(True, alpha=0.3)
                 st.pyplot(fig)
                 
                 # Базовая статистика
-                st.subheader(f"Статистика {selected_symbol}")
-                st.write(f"Текущая цена: ${df['close'].iloc[-1]:.6f}")
-                st.write(f"Максимум за период: ${df['high'].max():.6f}")
-                st.write(f"Минимум за период: ${df['low'].min():.6f}")
-                price_change = ((df['close'].iloc[-1] / df['close'].iloc[0]) - 1) * 100
-                st.write(f"Изменение за период: {price_change:.2f}%")
+                st.subheader(f"📊 Статистика {selected_symbol}")
+                
+                col_chart1, col_chart2, col_chart3, col_chart4 = st.columns(4)
+                
+                with col_chart1:
+                    st.metric("Текущая цена", f"${df['close'].iloc[-1]:.6f}")
+                with col_chart2:
+                    st.metric("Максимум", f"${df['high'].max():.6f}")
+                with col_chart3:
+                    st.metric("Минимум", f"${df['low'].min():.6f}")
+                with col_chart4:
+                    price_change = ((df['close'].iloc[-1] / df['close'].iloc[0]) - 1) * 100
+                    st.metric("Изменение", f"{price_change:.2f}%")
+                    
             else:
                 st.warning("Данные для выбранной пары недоступны.")
         except Exception as e:
             st.error(f"Ошибка при получении данных: {str(e)}")
     elif not api_key or not api_secret:
         st.warning("Введите API ключи в боковой панели для просмотра графиков")
+    else:
+        st.info("Выберите торговую пару для отображения графика")
 
 # Вкладка 5: Grid Trading (всегда доступна)
 with tab5:
-    st.header("Симуляция сеточной торговли")
+    st.header("⚡ Симуляция сеточной торговли")
 
     # Параметры для сеточной торговли
-    st.subheader("Параметры сетки")
+    st.subheader("🎛️ Параметры сетки")
     
     col1, col2, col3 = st.columns(3)
     
@@ -473,7 +575,7 @@ with tab5:
     st.markdown("---")
     
     # Дополнительные параметры симуляции
-    st.subheader("Дополнительные параметры")
+    st.subheader("⚙️ Дополнительные параметры")
     col_a, col_b, col_c = st.columns(3)
     with col_a:
         simulation_days = st.slider(
@@ -502,7 +604,7 @@ with tab5:
         )
 
     # Выбор пары для симуляции
-    current_pairs_for_grid = st.session_state.saved_pairs if 'saved_pairs' in st.session_state else popular_pairs
+    current_pairs_for_grid = st.session_state.saved_pairs if st.session_state.saved_pairs else popular_pairs
     selected_pair_for_grid = st.selectbox(
         "Выберите пару для симуляции",
         current_pairs_for_grid,
@@ -510,7 +612,7 @@ with tab5:
         help=f"Доступно {len(current_pairs_for_grid)} пар из сохраненного списка"
     )
 
-    if st.button("Запустить симуляцию для выбранной пары"):
+    if st.button("🚀 Запустить симуляцию для выбранной пары", type="primary"):
         if not saved_api_key or not saved_api_secret:
             st.error("Пожалуйста, введите и сохраните API ключи в боковой панели.")
         elif not selected_pair_for_grid:
@@ -518,18 +620,18 @@ with tab5:
         else:
             try:
                 # Инициализация инструментов
-                st.info("Подключение к Binance...")
-                collector = BinanceDataCollector(saved_api_key, saved_api_secret)
-                grid_analyzer = GridAnalyzer(collector)
+                with st.spinner("Подключение к Binance..."):
+                    collector = BinanceDataCollector(saved_api_key, saved_api_secret)
+                    grid_analyzer = GridAnalyzer(collector)
                 st.success("Подключение успешно!")
                 
                 # Получение исторических данных
-                st.info(f"Загрузка исторических данных для {selected_pair_for_grid}...")
-                timeframe_in_minutes = {'15m': 15, '1h': 60, '4h': 240, '1d': 1440}
-                total_minutes = simulation_days * 24 * 60
-                limit = int(total_minutes / timeframe_in_minutes[timeframe])
-                
-                df_for_simulation = collector.get_historical_data(selected_pair_for_grid, timeframe, limit)
+                with st.spinner(f"Загрузка исторических данных для {selected_pair_for_grid}..."):
+                    timeframe_in_minutes = {'15m': 15, '1h': 60, '4h': 240, '1d': 1440}
+                    total_minutes = simulation_days * 24 * 60
+                    limit = int(total_minutes / timeframe_in_minutes[timeframe])
+                    
+                    df_for_simulation = collector.get_historical_data(selected_pair_for_grid, timeframe, limit)
                 
                 if df_for_simulation.empty:
                     st.error("Не удалось загрузить данные для симуляции.")
@@ -549,10 +651,10 @@ with tab5:
                             debug=False
                         )
 
-                    st.success(f"Симуляция для {selected_pair_for_grid} за {simulation_days} дней завершена!")
+                    st.success(f"✅ Симуляция для {selected_pair_for_grid} за {simulation_days} дней завершена!")
                     
                     # Отображение результатов
-                    st.subheader("Результаты симуляции")
+                    st.subheader("📊 Результаты симуляции")
                     
                     # Расчет комбинированных результатов
                     total_pnl = stats_long['total_pnl'] + stats_short['total_pnl']
@@ -561,16 +663,16 @@ with tab5:
                     total_trades = stats_long['trades_count'] + stats_short['trades_count']
                     total_commission = stats_long['total_commission'] + stats_short['total_commission']
                     
-                    col_a, col_b, col_c = st.columns(3)
+                    col_result1, col_result2, col_result3 = st.columns(3)
                     
-                    with col_a:
+                    with col_result1:
                         st.metric("Общий PnL", f"${total_pnl:.2f}", f"{total_pnl_pct:.2f}%")
-                    with col_b:
+                    with col_result2:
                         st.metric("Всего сделок", total_trades)
-                    with col_c:
+                    with col_result3:
                         st.metric("Всего комиссий", f"${total_commission:.2f}")
 
-                    st.subheader("Детальная статистика")
+                    st.subheader("📋 Детальная статистика")
                     
                     results_data = {
                         "Метрика": ["Баланс Long", "PnL Long ($)", "PnL Long (%)", "Сделок Long", "Комиссии Long ($)",
@@ -586,23 +688,24 @@ with tab5:
                     st.dataframe(results_df, use_container_width=True)
 
                     # Отображение логов сделок
-                    with st.expander("Показать логи сделок"):
+                    with st.expander("📋 Показать логи сделок"):
                         st.subheader("Лог сделок Long")
                         if log_long_df: # Проверяем, что список не пустой
                             df_long = pd.DataFrame(log_long_df)
                             st.dataframe(df_long, use_container_width=True)
                         else:
-                            st.write("Сделок по Long не было.")
+                            st.info("Сделок по Long не было.")
                             
                         st.subheader("Лог сделок Short")
                         if log_short_df: # Проверяем, что список не пустой
                             df_short = pd.DataFrame(log_short_df)
                             st.dataframe(df_short, use_container_width=True)
                         else:
-                            st.write("Сделок по Short не было.")
+                            st.info("Сделок по Short не было.")
 
             except Exception as e:
                 st.error(f"Произошла ошибка во время симуляции: {e}")
+                st.exception(e)
 
 # Вкладка 6: Авто-оптимизация
 with tab6:
@@ -617,12 +720,12 @@ with tab6:
     """)
     
     # Параметры оптимизации
-    st.subheader("Параметры оптимизации")
+    st.subheader("⚙️ Параметры оптимизации")
     
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        current_pairs_for_opt = st.session_state.saved_pairs if 'saved_pairs' in st.session_state else popular_pairs
+        current_pairs_for_opt = st.session_state.saved_pairs if st.session_state.saved_pairs else popular_pairs
         opt_pair = st.selectbox(
             "Пара для оптимизации",
             current_pairs_for_opt,
@@ -671,7 +774,7 @@ with tab6:
         )
     
     # Дополнительные параметры в зависимости от метода
-    st.subheader("Настройки алгоритма")
+    st.subheader("🎛️ Настройки алгоритма")
     
     # Инициализируем переменные значениями по умолчанию
     population_size = 50
@@ -760,7 +863,7 @@ with tab6:
                     
                     end_time = time.time()
                     progress_bar.progress(100)
-                    status_text.text(f"Оптимизация завершена за {end_time - start_time:.1f} секунд")
+                    status_text.text(f"✅ Оптимизация завершена за {end_time - start_time:.1f} секунд")
                     
                     # Отображение результатов
                     st.success(f"Найдено {len(results)} вариантов параметров!")
@@ -817,9 +920,9 @@ with tab6:
                             st.error(f"🔴 Низкая стабильность (разность {stability:.2f}%)")
                         
                         # Кнопка для тестирования лучших параметров
-                        st.subheader("Тестирование лучших параметров")
+                        st.subheader("🧪 Тестирование лучших параметров")
                         
-                        if st.button("Протестировать лучшие параметры на полных данных"):
+                        if st.button("🔬 Протестировать лучшие параметры на полных данных"):
                             with st.spinner("Тестирование..."):
                                 test_stats_long, test_stats_short, test_log_long, test_log_short = grid_analyzer.estimate_dual_grid_by_candles_realistic(
                                     df=df_opt,
@@ -837,7 +940,7 @@ with tab6:
                                 total_pnl = test_stats_long['total_pnl'] + test_stats_short['total_pnl']
                                 total_pnl_pct = (total_pnl / (opt_balance * 2)) * 100
                                 
-                                st.success("Тест на полных данных завершен!")
+                                st.success("✅ Тест на полных данных завершен!")
                                 st.metric("Результат на полных данных", f"{total_pnl_pct:.2f}%", f"${total_pnl:.2f}")
                                 
                                 # Сравнение с ожидаемым результатом
@@ -851,38 +954,54 @@ with tab6:
 
 # Основной блок запуска анализа (если кнопка нажата)
 if start_analysis:
-    if not api_key or not api_secret:
-        log_container.error("Введите API ключи для начала анализа.")
-    else:
-        try:
-            # Инициализация классов
-            log_container.info("Инициализация модулей...")
-            collector = BinanceDataCollector(api_key, api_secret)
-            processor = DataProcessor(collector)
-            analyzer = CorrelationAnalyzer(collector) # Исправлено: передаем collector
-            portfolio_builder = PortfolioBuilder(collector, analyzer) # Исправлено: передаем collector и analyzer
-            
-            # Получение и фильтрация пар
-            log_container.info("Получение и фильтрация торговых пар...")
-            all_pairs = collector.get_all_usdt_pairs()
-            filtered_pairs = processor.filter_pairs_by_volume_and_price(
-                all_pairs, 
-                min_volume=min_volume, 
-                min_price=min_price, 
-                max_price=max_price
-            )
-            
-            # Ограничиваем количество пар для анализа
-            pairs_to_analyze = filtered_pairs[:max_pairs]
-            log_container.success(f"Отобрано {len(pairs_to_analyze)} пар для анализа.")
-            
-            # Сохраняем результаты фильтрации в session_state
-            st.session_state.filtered_pairs = pairs_to_analyze
-            
-            # Обновляем вкладку 2 с отфильтрованными парами
-            with tab2:
-                st.empty() # Очищаем предыдущий контент
-                st.subheader("✅ Результаты фильтрации")
+    with log_container:
+        if not api_key or not api_secret:
+            st.error("❌ Введите API ключи для начала анализа.")
+        else:
+            try:
+                # Прогресс анализа
+                progress_analysis = st.progress(0)
+                status_analysis = st.empty()
+                
+                # Инициализация классов
+                status_analysis.info("🔧 Инициализация модулей...")
+                progress_analysis.progress(10)
+                
+                collector = BinanceDataCollector(api_key, api_secret)
+                processor = DataProcessor(collector)
+                analyzer = CorrelationAnalyzer(collector) # Исправлено: передаем collector
+                portfolio_builder = PortfolioBuilder(collector, analyzer) # Исправлено: передаем collector и analyzer
+                
+                progress_analysis.progress(30)
+                
+                # Получение и фильтрация пар
+                status_analysis.info("📊 Получение и фильтрация торговых пар...")
+                all_pairs = collector.get_all_usdt_pairs()
+                filtered_pairs = processor.filter_pairs_by_volume_and_price(
+                    all_pairs, 
+                    min_volume=min_volume, 
+                    min_price=min_price, 
+                    max_price=max_price
+                )
+                
+                progress_analysis.progress(70)
+                
+                # Ограничиваем количество пар для анализа
+                pairs_to_analyze = filtered_pairs[:max_pairs]
+                
+                progress_analysis.progress(90)
+                status_analysis.success(f"✅ Отобрано {len(pairs_to_analyze)} пар для анализа.")
+                
+                # Сохраняем результаты фильтрации в session_state
+                st.session_state.filtered_pairs = pairs_to_analyze
+                
+                progress_analysis.progress(100)
+                
+                # Обновляем вкладку 2 с отфильтрованными парами
+                st.success("🎉 Анализ завершен! Переключитесь на вкладку 'Фильтр торговых пар' для просмотра результатов.")
+                
+                # Автоматически показываем результаты
+                st.subheader("📋 Результаты фильтрации")
                 
                 col_res1, col_res2, col_res3 = st.columns(3)
                 with col_res1:
@@ -904,10 +1023,7 @@ if start_analysis:
                     st.session_state.saved_pairs = pairs_to_analyze
                     save_pairs_list(pairs_to_analyze)
                     st.success("Отфильтрованный список сохранен как основной!")
-            
-            # Здесь можно добавить дальнейшую логику анализа, если требуется
-            # Например, расчет корреляций и построение портфеля
-            
-        except Exception as e:
-            log_container.error(f"Произошла ошибка: {str(e)}")
-            st.exception(e) # Выводим полный traceback для отладки
+                
+            except Exception as e:
+                status_analysis.error(f"❌ Произошла ошибка: {str(e)}")
+                st.exception(e) # Выводим полный traceback для отладки

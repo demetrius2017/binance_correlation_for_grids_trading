@@ -1,0 +1,16 @@
+# Google App Engine конфигурация (альтернатива Heroku)
+runtime: python39
+
+env_variables:
+  BINANCE_API_KEY: "your_api_key_here"
+  BINANCE_API_SECRET: "your_api_secret_here"
+
+automatic_scaling:
+  min_instances: 0
+  max_instances: 2
+  target_cpu_utilization: 0.6
+
+resources:
+  cpu: 1
+  memory_gb: 2
+  disk_size_gb: 10

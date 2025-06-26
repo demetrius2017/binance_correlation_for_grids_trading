@@ -1,0 +1,34 @@
+# Railway ignore file - исключаем ненужные файлы для Streamlit деплоя
+
+# API files (для других платформ)
+api/
+vercel.json
+render.yaml
+app.yaml
+
+# Документация и отчеты
+*.md
+!README.md
+
+# Кэш и временные файлы
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.pytest_cache/
+
+# Local development
+.env
+.vscode/
+.idea/
+.DS_Store
+
+# Test files
+test_*.py
+*_test.py
+
+# Backup files
+*.bak
+*.orig

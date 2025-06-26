@@ -117,6 +117,23 @@ class GridOptimizer:
             new_params.stop_loss_pct = stop_loss_options[new_idx]
             
         return new_params
+    
+    def params_to_key(self, params: OptimizationParams) -> str:
+        """Создает уникальный ключ для параметров"""
+        return f"{params.grid_range_pct:.1f}_{params.grid_step_pct:.1f}_{params.stop_loss_pct:.1f}"
+    
+    def remove_duplicate_params(self, params_list: List[OptimizationParams]) -> List[OptimizationParams]:
+        """Удаляет дублирующиеся параметры из списка"""
+        seen_keys = set()
+        unique_params = []
+        
+        for params in params_list:
+            key = self.params_to_key(params)
+            if key not in seen_keys:
+                seen_keys.add(key)
+                unique_params.append(params)
+        
+        return unique_params
         
     def crossover_params(self, parent1: OptimizationParams, parent2: OptimizationParams) -> OptimizationParams:
         """Скрещивание параметров двух родителей"""
@@ -223,8 +240,17 @@ class GridOptimizer:
         if progress_callback:
             progress_callback(f"Разделение данных: {len(backtest_df)} точек для бэктеста, {len(forward_df)} для форвард теста")
         
-        # Создание начальной популяции
-        population = [self.create_random_params() for _ in range(population_size)]
+        # Создание начальной популяции без дубликатов
+        population_candidates = []
+        while len(population_candidates) < population_size * 2:  # Генерируем больше кандидатов
+            population_candidates.append(self.create_random_params())
+        
+        population = self.remove_duplicate_params(population_candidates)[:population_size]
+        
+        # Если после удаления дубликатов недостаточно особей, добавляем случайные
+        while len(population) < population_size:
+            population.append(self.create_random_params())
+            
         best_results = []
         
         for generation in range(generations):
@@ -312,9 +338,9 @@ class GridOptimizer:
             if progress_callback:
                 progress_callback(f"Итерация {iteration + 1}/{iterations}")
             
-            # Генерация точек для текущей итерации с кратными значениями
-            test_params = []
-            for _ in range(points_per_iteration):
+            # Генерация точек для текущей итерации с кратными значениями без дубликатов
+            test_params_candidates = []
+            while len(test_params_candidates) < points_per_iteration * 2:  # Генерируем больше кандидатов
                 # Используем кратные значения вместо случайных float
                 grid_range_options = list(range(5, 55, 5))  # [5, 10, 15, ..., 50]
                 grid_step_options = [round(x * 0.5, 1) for x in range(1, 11)]  # [0.5, 1.0, 1.5, ..., 5.0]
@@ -325,7 +351,14 @@ class GridOptimizer:
                     grid_step_pct=random.choice(grid_step_options),
                     stop_loss_pct=random.choice(stop_loss_options)
                 )
-                test_params.append(params)
+                test_params_candidates.append(params)
+            
+            # Удаляем дубликаты и берем нужное количество
+            test_params = self.remove_duplicate_params(test_params_candidates)[:points_per_iteration]
+            
+            # Если после удаления дубликатов недостаточно параметров, добавляем случайные
+            while len(test_params) < points_per_iteration:
+                test_params.append(self.create_random_params())
             
             # Тестирование в многопоточном режиме
             iteration_results = []

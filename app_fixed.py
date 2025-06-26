@@ -62,6 +62,19 @@ def load_api_keys() -> Tuple[str, str]:
         return "", ""
 
 
+def get_current_api_keys() -> Tuple[str, str]:
+    """Получает текущие API ключи из session_state или из сохраненных"""
+    # Сначала проверяем, есть ли ключи в session_state (введенные в sidebar)
+    if hasattr(st, 'session_state'):
+        session_api_key = st.session_state.get('current_api_key', '')
+        session_api_secret = st.session_state.get('current_api_secret', '')
+        if session_api_key and session_api_secret:
+            return session_api_key, session_api_secret
+    
+    # Если в session_state нет ключей, загружаем сохраненные
+    return load_api_keys()
+
+
 # Настройка страницы
 st.set_page_config(
     page_title="Анализатор торговых пар Binance",
@@ -72,6 +85,12 @@ st.set_page_config(
 # Инициализация состояния сессии
 if 'api_keys_saved' not in st.session_state:
     st.session_state.api_keys_saved = False
+
+# Инициализируем API ключи из сохраненных данных
+if 'current_api_key' not in st.session_state or 'current_api_secret' not in st.session_state:
+    saved_key, saved_secret = load_api_keys()
+    st.session_state.current_api_key = saved_key
+    st.session_state.current_api_secret = saved_secret
 
 if 'saved_pairs' not in st.session_state:
     st.session_state.saved_pairs = []
@@ -94,13 +113,15 @@ with st.sidebar:
         "API Key", 
         value=saved_api_key,
         type="password", 
-        help="Введите ваш API ключ от Binance"
+        help="Введите ваш API ключ от Binance",
+        key="api_key"
     )
     api_secret = st.text_input(
         "API Secret", 
         value=saved_api_secret,
         type="password", 
-        help="Введите ваш секретный ключ от Binance"
+        help="Введите ваш секретный ключ от Binance",
+        key="api_secret"
     )
     
     # Кнопка для сохранения ключей
@@ -109,6 +130,9 @@ with st.sidebar:
             try:
                 save_api_keys(api_key, api_secret)
                 st.session_state.api_keys_saved = True
+                # Сохраняем ключи также в session_state для использования в других вкладках
+                st.session_state.current_api_key = api_key
+                st.session_state.current_api_secret = api_secret
                 st.success("API ключи успешно сохранены!")
                 # Принудительно обновляем интерфейс
                 time.sleep(1)
@@ -117,6 +141,11 @@ with st.sidebar:
                 st.error(f"Ошибка при сохранении ключей: {e}")
         else:
             st.error("Введите оба ключа для сохранения")
+    
+    # Автоматически сохраняем ключи в session_state при вводе
+    if api_key and api_secret:
+        st.session_state.current_api_key = api_key
+        st.session_state.current_api_secret = api_secret
     
     # Показываем статус сохранения ключей
     if st.session_state.api_keys_saved or (api_key and api_secret):
@@ -172,9 +201,6 @@ start_analysis = st.button("🚀 Запустить анализ", type="primary
 
 # Создаем контейнер для логов
 log_container = st.container()
-
-# Загружаем сохраненные ключи для использования в Grid Trading
-saved_api_key, saved_api_secret = load_api_keys()
 
 # Создаем вкладки (всегда доступны)
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
@@ -565,10 +591,13 @@ with tab4:
         help=f"Доступно {len(current_pairs_for_chart)} пар из сохраненного списка"
     )
     
-    if selected_symbol and api_key and api_secret:
+    # Получаем актуальные API ключи для графиков
+    current_api_key, current_api_secret = get_current_api_keys()
+    
+    if selected_symbol and current_api_key and current_api_secret:
         try:
             with st.spinner(f"Загрузка данных для {selected_symbol}..."):
-                collector = BinanceDataCollector(api_key, api_secret)
+                collector = BinanceDataCollector(current_api_key, current_api_secret)
                 df = collector.get_historical_data(selected_symbol, "1d", 90)
             
             if not df.empty:
@@ -600,7 +629,7 @@ with tab4:
                 st.warning("Данные для выбранной пары недоступны.")
         except Exception as e:
             st.error(f"Ошибка при получении данных: {str(e)}")
-    elif not api_key or not api_secret:
+    elif not current_api_key or not current_api_secret:
         st.warning("Введите API ключи в боковой панели для просмотра графиков")
     else:
         st.info("Выберите торговую пару для отображения графика")
@@ -608,18 +637,46 @@ with tab4:
 # Вкладка 5: Grid Trading (всегда доступна)
 with tab5:
     st.header("⚡ Симуляция сеточной торговли")
+    
+    # Проверяем, есть ли переданные параметры из оптимизации
+    if 'grid_range_pct_auto' in st.session_state:
+        st.success(f"🎯 Загружены оптимизированные параметры #{st.session_state.get('selected_params_rank', '?')}")
+        
+        col_info1, col_info2, col_info3 = st.columns(3)
+        with col_info1:
+            st.metric("Диапазон сетки", f"{st.session_state.grid_range_pct_auto:.1f}%")
+        with col_info2:
+            st.metric("Шаг сетки", f"{st.session_state.grid_step_pct_auto:.1f}%")
+        with col_info3:
+            st.metric("Стоп-лосс", f"{st.session_state.stop_loss_pct_auto:.1f}%")
+        
+        st.info("💡 Настройте период тестирования ниже и запустите симуляцию для проверки этих параметров")
+        
+        if st.button("❌ Очистить загруженные параметры"):
+            # Очищаем переданные параметры
+            del st.session_state.grid_range_pct_auto
+            del st.session_state.grid_step_pct_auto
+            del st.session_state.stop_loss_pct_auto
+            if 'selected_params_rank' in st.session_state:
+                del st.session_state.selected_params_rank
+            st.rerun()
 
     # Параметры для сеточной торговли
     st.subheader("🎛️ Параметры сетки")
     
     col1, col2, col3 = st.columns(3)
     
+    # Используем переданные параметры как значения по умолчанию, если они есть
+    default_range = st.session_state.get('grid_range_pct_auto', 20.0)
+    default_step = st.session_state.get('grid_step_pct_auto', 1.0)
+    default_stop_loss = st.session_state.get('stop_loss_pct_auto', 5.0)
+    
     with col1:
         grid_range_pct = st.slider(
             "Диапазон сетки (%)", 
             min_value=5.0, 
             max_value=50.0, 
-            value=20.0,
+            value=float(default_range),
             step=5.0,
             help="Процентный диапазон для размещения сетки (кратно 5%)"
         )
@@ -629,7 +686,7 @@ with tab5:
             "Шаг сетки (%)", 
             min_value=0.5, 
             max_value=5.0, 
-            value=1.0,
+            value=float(default_step),
             step=0.5,
             help="Процентный шаг между уровнями сетки (кратно 0.5%)"
         )
@@ -663,7 +720,7 @@ with tab5:
             "Стоп-лосс (%)",
             min_value=0.0,
             max_value=15.0,
-            value=5.0,
+            value=float(default_stop_loss),
             step=5.0,
             help="Процент убытка от начального капитала для закрытия всех позиций (кратно 5%). 0 - отключить."
         )
@@ -685,7 +742,10 @@ with tab5:
     )
 
     if st.button("🚀 Запустить симуляцию для выбранной пары", type="primary"):
-        if not saved_api_key or not saved_api_secret:
+        # Получаем актуальные API ключи
+        current_api_key, current_api_secret = get_current_api_keys()
+        
+        if not current_api_key or not current_api_secret:
             st.error("Пожалуйста, введите и сохраните API ключи в боковой панели.")
         elif not selected_pair_for_grid:
             st.warning("Пожалуйста, выберите пару для симуляции.")
@@ -693,7 +753,7 @@ with tab5:
             try:
                 # Инициализация инструментов
                 with st.spinner("Подключение к Binance..."):
-                    collector = BinanceDataCollector(saved_api_key, saved_api_secret)
+                    collector = BinanceDataCollector(current_api_key, current_api_secret)
                     grid_analyzer = GridAnalyzer(collector)
                 st.success("Подключение успешно!")
                 
@@ -871,7 +931,10 @@ with tab6:
     
     # Кнопка запуска оптимизации
     if st.button("🚀 Запустить оптимизацию", type="primary", key="start_optimization"):
-        if not saved_api_key or not saved_api_secret:
+        # Получаем актуальные API ключи
+        current_api_key, current_api_secret = get_current_api_keys()
+        
+        if not current_api_key or not current_api_secret:
             st.error("Пожалуйста, введите и сохраните API ключи в боковой панели.")
         else:
             try:
@@ -881,7 +944,7 @@ with tab6:
                 
                 # Инициализация
                 status_text.text("Инициализация...")
-                collector = BinanceDataCollector(saved_api_key, saved_api_secret)
+                collector = BinanceDataCollector(current_api_key, current_api_secret)
                 grid_analyzer = GridAnalyzer(collector)
                 optimizer = GridOptimizer(grid_analyzer, TAKER_COMMISSION_RATE)
                 
@@ -940,27 +1003,74 @@ with tab6:
                     # Отображение результатов
                     st.success(f"Найдено {len(results)} вариантов параметров!")
                     
-                    # Топ-10 результатов
+                    # Топ-10 результатов с кнопками быстрого тестирования
                     st.subheader("🏆 Топ-10 лучших параметров")
                     
                     top_results = results[:10]
-                    results_data = []
                     
+                    # Отображаем каждый результат как карточку с кнопкой
                     for i, result in enumerate(top_results):
-                        results_data.append({
-                            'Ранг': i + 1,
-                            'Общий скор (%)': f"{result.combined_score:.2f}",
-                            'Бэктест (%)': f"{result.backtest_score:.2f}",
-                            'Форвард (%)': f"{result.forward_score:.2f}",
-                            'Диапазон сетки (%)': f"{result.params.grid_range_pct:.1f}",
-                            'Шаг сетки (%)': f"{result.params.grid_step_pct:.2f}",
-                            'Стоп-лосс (%)': f"{result.params.stop_loss_pct:.1f}",
-                            'Сделок': result.trades_count,
-                            'Просадка (%)': f"{result.drawdown:.2f}"
-                        })
+                        with st.container():
+                            st.markdown("---")
+                            col_rank, col_params, col_scores, col_action = st.columns([1, 3, 3, 2])
+                            
+                            with col_rank:
+                                if i == 0:
+                                    st.markdown("### 🥇")
+                                elif i == 1:
+                                    st.markdown("### 🥈")
+                                elif i == 2:
+                                    st.markdown("### 🥉")
+                                else:
+                                    st.markdown(f"### **#{i+1}**")
+                            
+                            with col_params:
+                                st.write("**Параметры:**")
+                                st.write(f"• Диапазон: **{result.params.grid_range_pct:.1f}%**")
+                                st.write(f"• Шаг: **{result.params.grid_step_pct:.1f}%**")
+                                st.write(f"• Стоп-лосс: **{result.params.stop_loss_pct:.1f}%**")
+                            
+                            with col_scores:
+                                st.write("**Результаты:**")
+                                st.write(f"• Общий скор: **{result.combined_score:.2f}%**")
+                                st.write(f"• Бэктест: {result.backtest_score:.2f}%")
+                                st.write(f"• Форвард: {result.forward_score:.2f}%")
+                                st.write(f"• Сделок: {result.trades_count}")
+                            
+                            with col_action:
+                                # Кнопка для быстрого тестирования
+                                button_key = f"test_params_{i}"
+                                if st.button(f"🚀 Тестировать", key=button_key, use_container_width=True):
+                                    # Сохраняем параметры в session_state
+                                    st.session_state.grid_range_pct_auto = result.params.grid_range_pct
+                                    st.session_state.grid_step_pct_auto = result.params.grid_step_pct
+                                    st.session_state.stop_loss_pct_auto = result.params.stop_loss_pct
+                                    st.session_state.selected_params_rank = i + 1
+                                    st.session_state.switch_to_grid_tab = True
+                                    
+                                    st.success(f"✅ Параметры #{i+1} переданы на вкладку Grid Trading!")
+                                    st.info("🔄 Переключитесь на вкладку 'Grid Trading' для тестирования")
+                                    time.sleep(1)
+                                    st.rerun()
                     
-                    results_df = pd.DataFrame(results_data)
-                    st.dataframe(results_df, use_container_width=True)
+                    # Дополнительно: таблица для общего обзора
+                    with st.expander("📊 Показать сводную таблицу"):
+                        results_data = []
+                        for i, result in enumerate(top_results):
+                            results_data.append({
+                                'Ранг': i + 1,
+                                'Общий скор (%)': f"{result.combined_score:.2f}",
+                                'Бэктест (%)': f"{result.backtest_score:.2f}",
+                                'Форвард (%)': f"{result.forward_score:.2f}",
+                                'Диапазон сетки (%)': f"{result.params.grid_range_pct:.1f}",
+                                'Шаг сетки (%)': f"{result.params.grid_step_pct:.2f}",
+                                'Стоп-лосс (%)': f"{result.params.stop_loss_pct:.1f}",
+                                'Сделок': result.trades_count,
+                                'Просадка (%)': f"{result.drawdown:.2f}"
+                            })
+                        
+                        results_df = pd.DataFrame(results_data)
+                        st.dataframe(results_df, use_container_width=True)
                     
                     # Детальная информация о лучшем результате
                     if results:

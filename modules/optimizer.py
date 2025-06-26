@@ -50,42 +50,71 @@ class GridOptimizer:
         }
         
     def create_random_params(self) -> OptimizationParams:
-        """Создает случайные параметры в заданных границах"""
+        """Создает случайные параметры в заданных границах с кратными шагами"""
+        # Диапазон сетки кратно 5% (5, 10, 15, ..., 50)
+        grid_range_options = list(range(5, 55, 5))  # [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
+        grid_range_pct = float(random.choice(grid_range_options))
+        
+        # Шаг сетки кратно 0.5% (0.5, 1.0, 1.5, ..., 5.0)
+        grid_step_options = [round(x * 0.5, 1) for x in range(1, 11)]  # [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0]
+        grid_step_pct = random.choice(grid_step_options)
+        
+        # Стоп-лосс кратно 5% (0, 5, 10, 15)
+        stop_loss_options = [0.0, 5.0, 10.0, 15.0]
+        stop_loss_pct = random.choice(stop_loss_options)
+        
         return OptimizationParams(
-            grid_range_pct=random.uniform(*self.param_bounds['grid_range_pct']),
-            grid_step_pct=random.uniform(*self.param_bounds['grid_step_pct']),
-            stop_loss_pct=random.uniform(*self.param_bounds['stop_loss_pct'])
+            grid_range_pct=grid_range_pct,
+            grid_step_pct=grid_step_pct,
+            stop_loss_pct=stop_loss_pct
         )
         
     def mutate_params(self, params: OptimizationParams, mutation_rate=0.1) -> OptimizationParams:
-        """Мутация параметров для генетического алгоритма"""
+        """Мутация параметров для генетического алгоритма с кратными шагами"""
         new_params = OptimizationParams(
             grid_range_pct=params.grid_range_pct,
             grid_step_pct=params.grid_step_pct,
             stop_loss_pct=params.stop_loss_pct
         )
         
-        # Мутация каждого параметра с заданной вероятностью
+        # Мутация диапазона сетки (кратно 5%)
         if random.random() < mutation_rate:
-            mutation_factor = random.uniform(0.8, 1.2)  # ±20%
-            new_params.grid_range_pct = np.clip(
-                new_params.grid_range_pct * mutation_factor,
-                *self.param_bounds['grid_range_pct']
-            )
+            grid_range_options = list(range(5, 55, 5))  # [5, 10, 15, ..., 50]
+            current_idx = grid_range_options.index(int(params.grid_range_pct)) if int(params.grid_range_pct) in grid_range_options else 0
+            # Выбираем соседний элемент
+            if current_idx > 0 and current_idx < len(grid_range_options) - 1:
+                new_idx = random.choice([current_idx - 1, current_idx + 1])
+            elif current_idx == 0:
+                new_idx = current_idx + 1
+            else:
+                new_idx = current_idx - 1
+            new_params.grid_range_pct = float(grid_range_options[new_idx])
             
+        # Мутация шага сетки (кратно 0.5%)
         if random.random() < mutation_rate:
-            mutation_factor = random.uniform(0.8, 1.2)
-            new_params.grid_step_pct = np.clip(
-                new_params.grid_step_pct * mutation_factor,
-                *self.param_bounds['grid_step_pct']
-            )
+            grid_step_options = [round(x * 0.5, 1) for x in range(1, 11)]  # [0.5, 1.0, 1.5, ..., 5.0]
+            current_idx = grid_step_options.index(params.grid_step_pct) if params.grid_step_pct in grid_step_options else 0
+            # Выбираем соседний элемент
+            if current_idx > 0 and current_idx < len(grid_step_options) - 1:
+                new_idx = random.choice([current_idx - 1, current_idx + 1])
+            elif current_idx == 0:
+                new_idx = current_idx + 1
+            else:
+                new_idx = current_idx - 1
+            new_params.grid_step_pct = grid_step_options[new_idx]
             
+        # Мутация стоп-лосса (кратно 5%)
         if random.random() < mutation_rate:
-            mutation_factor = random.uniform(0.8, 1.2)
-            new_params.stop_loss_pct = np.clip(
-                new_params.stop_loss_pct * mutation_factor,
-                *self.param_bounds['stop_loss_pct']
-            )
+            stop_loss_options = [0.0, 5.0, 10.0, 15.0]
+            current_idx = stop_loss_options.index(params.stop_loss_pct) if params.stop_loss_pct in stop_loss_options else 0
+            # Выбираем соседний элемент
+            if current_idx > 0 and current_idx < len(stop_loss_options) - 1:
+                new_idx = random.choice([current_idx - 1, current_idx + 1])
+            elif current_idx == 0:
+                new_idx = current_idx + 1
+            else:
+                new_idx = current_idx - 1
+            new_params.stop_loss_pct = stop_loss_options[new_idx]
             
         return new_params
         
@@ -283,13 +312,18 @@ class GridOptimizer:
             if progress_callback:
                 progress_callback(f"Итерация {iteration + 1}/{iterations}")
             
-            # Генерация точек для текущей итерации
+            # Генерация точек для текущей итерации с кратными значениями
             test_params = []
             for _ in range(points_per_iteration):
+                # Используем кратные значения вместо случайных float
+                grid_range_options = list(range(5, 55, 5))  # [5, 10, 15, ..., 50]
+                grid_step_options = [round(x * 0.5, 1) for x in range(1, 11)]  # [0.5, 1.0, 1.5, ..., 5.0]
+                stop_loss_options = [0.0, 5.0, 10.0, 15.0]
+                
                 params = OptimizationParams(
-                    grid_range_pct=random.uniform(*current_bounds['grid_range_pct']),
-                    grid_step_pct=random.uniform(*current_bounds['grid_step_pct']),
-                    stop_loss_pct=random.uniform(*current_bounds['stop_loss_pct'])
+                    grid_range_pct=float(random.choice(grid_range_options)),
+                    grid_step_pct=random.choice(grid_step_options),
+                    stop_loss_pct=random.choice(stop_loss_options)
                 )
                 test_params.append(params)
             

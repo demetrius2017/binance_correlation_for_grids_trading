@@ -10,8 +10,6 @@ from typing import List, Dict, Any, Tuple
 
 import pandas as pd
 import numpy as np
-import matplotlib
-matplotlib.use('Agg')  # Для headless окружения (Railway, Heroku и т.д.)
 import matplotlib.pyplot as plt
 import seaborn as sns
 import streamlit as st
@@ -74,6 +72,9 @@ st.set_page_config(
 # Инициализация состояния сессии
 if 'api_keys_saved' not in st.session_state:
     st.session_state.api_keys_saved = False
+
+if 'saved_pairs' not in st.session_state:
+    st.session_state.saved_pairs = []
 
 if 'filtered_pairs' not in st.session_state:
     st.session_state.filtered_pairs = []
@@ -166,13 +167,21 @@ with st.sidebar:
         help="Максимальное количество пар для детального анализа"
     )
 
-# Загружаем сохраненные ключи для использования в других вкладках
+# Кнопка запуска анализа
+start_analysis = st.button("🚀 Запустить анализ", type="primary")
+
+# Создаем контейнер для логов
+log_container = st.container()
+
+# Загружаем сохраненные ключи для использования в Grid Trading
 saved_api_key, saved_api_secret = load_api_keys()
 
 # Создаем вкладки (всегда доступны)
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "⚙️ Настройки", 
+    "🔍 Фильтр торговых пар", 
     "ℹ️ Информация",
+    "📈 Графики",
     "⚡ Grid Trading",
     "🤖 Авто-оптимизация"
 ])
@@ -205,7 +214,38 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Предопределенный список популярных пар (для справки, больше не используется)
+# Предопределенный список популярных пар для всех вкладок
+popular_pairs = [
+    "BTCUSDT", "ETHUSDT", "BNBUSDT", "ADAUSDT", "XRPUSDT",
+    "LINKUSDT", "DOTUSDT", "LTCUSDT", "UNIUSDT", "SOLUSDT",
+    "MATICUSDT", "ICXUSDT", "VETUSDT", "XLMUSDT", "TRXUSDT",
+    "ATOMUSDT", "AVAXUSDT", "NEARUSDT", "AAVEUSDT", "ALGOUSDT",
+    "MANAUSDT", "SANDUSDT", "CHZUSDT", "FTMUSDT", "HBARUSDT",
+    "THETAUSDT", "IOTAUSDT", "EOSUSDT", "DYDXUSDT", "ZILUSDT"
+]
+
+# Функции для работы с сохраненными списками пар
+def save_pairs_list(pairs_list: List[str], filename: str = "saved_pairs.json") -> None:
+    """Сохраняет список пар в файл"""
+    try:
+        with open(filename, "w") as f:
+            json.dump(pairs_list, f)
+        st.success(f"Список из {len(pairs_list)} пар сохранен!")
+    except Exception as e:
+        st.error(f"Ошибка при сохранении: {e}")
+
+def load_pairs_list(filename: str = "saved_pairs.json") -> List[str]:
+    """Загружает список пар из файла"""
+    try:
+        if os.path.exists(filename):
+            with open(filename, "r") as f:
+                pairs = json.load(f)
+            return pairs
+        else:
+            return popular_pairs
+    except Exception as e:
+        st.error(f"Ошибка при загрузке: {e}")
+        return popular_pairs
 
 # Вкладка 1: Настройки и фильтр пар
 with tab1:
@@ -222,7 +262,11 @@ with tab1:
             st.error("🔑 API ключи не настроены")
     
     with col_status2:
-        st.success("📋 Binance API активен")
+        pairs_count = len(st.session_state.saved_pairs) if st.session_state.saved_pairs else 0
+        if pairs_count > 0:
+            st.success(f"📋 {pairs_count} пар загружено")
+        else:
+            st.warning("📋 Список пар пустой")
     
     with col_status3:
         if st.session_state.api_keys_saved:
@@ -232,8 +276,64 @@ with tab1:
     
     st.markdown("---")
     
+    # Секция настроек фильтрации пар
+    st.subheader("🔍 Фильтр торговых пар")
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.write("**Управление списком торговых пар:**")
+        
+        # Загружаем сохраненный список
+        if not st.session_state.saved_pairs:
+            st.session_state.saved_pairs = load_pairs_list()
+        
+        # Показываем текущий список
+        pairs_text = "\n".join(st.session_state.saved_pairs)
+        
+        # Текстовое поле для редактирования списка пар
+        edited_pairs_text = st.text_area(
+            "Список торговых пар (по одной на строку):",
+            value=pairs_text,
+            height=200,
+            help="Введите символы торговых пар, по одному на строку. Например: BTCUSDT"
+        )
+        
+    with col2:
+        st.write("**Действия:**")
+        
+        if st.button("💾 Сохранить список", use_container_width=True):
+            new_pairs = [pair.strip().upper() for pair in edited_pairs_text.split('\n') if pair.strip()]
+            if new_pairs:
+                st.session_state.saved_pairs = new_pairs
+                save_pairs_list(new_pairs)
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error("Список пар не может быть пустым")
+        
+        if st.button("🔄 Загрузить из файла", use_container_width=True):
+            loaded_pairs = load_pairs_list()
+            if loaded_pairs:
+                st.session_state.saved_pairs = loaded_pairs
+                st.success("Список загружен из файла!")
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error("Не удалось загрузить список из файла")
+        
+        if st.button("🔧 Сбросить к умолчанию", use_container_width=True):
+            st.session_state.saved_pairs = popular_pairs.copy()
+            st.success("Список сброшен к умолчанию!")
+            time.sleep(1)
+            st.rerun()
+        
+        st.info(f"Текущий список: {len(st.session_state.saved_pairs)} пар")
+    
+    st.markdown("---")
+    
     # Основные параметры анализа с ползунками
-    st.subheader("� Параметры фильтрации пар")
+    st.subheader("📊 Параметры анализа")
     
     col_a, col_b = st.columns(2)
     
@@ -278,62 +378,47 @@ with tab1:
     
     st.markdown("---")
     
-    # Отображение отфильтрованных пар из Binance
-    st.subheader("🔍 Фильтрованные торговые пары")
+    # Отображение текущих настроек
+    st.subheader("📋 Текущие параметры")
     
-    if api_key and api_secret:
-        with st.spinner("Загрузка всех пар с Binance..."):
-            try:
-                collector = BinanceDataCollector(api_key, api_secret)
-                processor = DataProcessor(collector)
-                
-                # Получаем и фильтруем все пары напрямую с Binance
-                all_pairs = collector.get_all_usdt_pairs()
-                filtered_pairs = processor.filter_pairs_by_volume_and_price(
-                    all_pairs, 
-                    min_volume=min_volume_calc, 
-                    min_price=min_price_slider, 
-                    max_price=max_price_slider
-                )
-                
-                # Ограничиваем количество отображаемых пар
-                display_pairs = filtered_pairs[:max_pairs_slider]
-                
-                # Сохраняем в session_state для использования в других вкладках
-                st.session_state.filtered_pairs = display_pairs
-                
-                # Отображаем результаты
-                col_info1, col_info2, col_info3 = st.columns(3)
-                
-                with col_info1:
-                    st.metric("Всего пар USDT", len(all_pairs))
-                with col_info2:
-                    st.metric("Прошли фильтр", len(filtered_pairs))
-                with col_info3:
-                    st.metric("Отображено", len(display_pairs))
-                
-                pairs_df = pd.DataFrame({
-                    'Символ': display_pairs,
-                    'Статус': ['✅ Готов к анализу'] * len(display_pairs)
-                })
-                
-                st.dataframe(pairs_df, use_container_width=True)
-                
-                if len(filtered_pairs) > max_pairs_slider:
-                    st.info(f"Показано {max_pairs_slider} из {len(filtered_pairs)} отфильтрованных пар. Увеличьте лимит для отображения большего количества.")
-                    
-            except Exception as e:
-                st.error(f"Ошибка при загрузке пар: {e}")
-                st.session_state.filtered_pairs = []
-    else:
-        st.warning("⚠️ Введите API ключи для загрузки списка торговых пар")
-        st.session_state.filtered_pairs = []
+    col_info1, col_info2 = st.columns(2)
+    
+    with col_info1:
+        st.metric("Минимальный объем", f"${min_volume_calc:,}")
+        st.metric("Диапазон цен", f"${min_price_slider:.4f} - ${max_price_slider:.2f}")
+    
+    with col_info2:
+        st.metric("Максимум пар", max_pairs_slider)
+        st.metric("Пар в списке", len(st.session_state.saved_pairs))
 
-# Вкладка 2: Информация
+# Вкладка 2: Фильтр торговых пар
 with tab2:
     st.header("🔍 Фильтр торговых пар")
     
-# Все старые вкладки удалены, теперь используем только 4 вкладки
+    if start_analysis:
+        st.subheader("🔄 Запуск анализа...")
+        st.info("Результаты анализа будут отображены здесь")
+        
+    else:
+        st.subheader("📋 Текущий список пар для анализа")
+        
+        # Используем сохраненный список пар
+        current_pairs = st.session_state.saved_pairs if st.session_state.saved_pairs else popular_pairs
+        
+        # Ограничиваем количество отображаемых пар
+        display_pairs = current_pairs[:max_pairs]
+        
+        pairs_df = pd.DataFrame({
+            'Символ': display_pairs,
+            'Описание': [f"Торговая пара {pair}" for pair in display_pairs],
+            'Статус': ['✅ Готов к анализу'] * len(display_pairs)
+        })
+        
+        st.dataframe(pairs_df, use_container_width=True)
+        st.info(f"Отображено {len(display_pairs)} из {len(current_pairs)} пар в списке")
+        
+        if len(current_pairs) > max_pairs:
+            st.warning(f"В списке {len(current_pairs)} пар, но для анализа выбрано только {max_pairs}. Увеличьте лимит в настройках или уменьшите список пар.")
 
 # Вкладка 3: Информация
 with tab3:
@@ -371,9 +456,11 @@ with tab3:
         st.write("""
         1. **Настройте API ключи** в боковой панели (получите их на Binance)
         2. **Настройте параметры** в первой вкладке "Настройки"
-        3. **Просмотрите отфильтрованные пары** в той же вкладке
-        4. **Протестируйте Grid Trading** во вкладке "Grid Trading"
-        5. **Оптимизируйте параметры** во вкладке "Авто-оптимизация"
+        3. **Отредактируйте список пар** для анализа в той же вкладке
+        4. **Запустите анализ** кнопкой в боковой панели
+        5. **Просмотрите результаты** во вкладке "Фильтр торговых пар"
+        6. **Протестируйте Grid Trading** во вкладке "Grid Trading"
+        7. **Оптимизируйте параметры** во вкладке "Авто-оптимизация"
         """)
     
     with st.expander("О Grid Trading"):
@@ -392,8 +479,60 @@ with tab3:
         - Комиссии могут съедать прибыль
         """)
 
-# Вкладка 3: Grid Trading (всегда доступна)
-with tab3:
+# Вкладка 4: Графики цен
+with tab4:
+    st.header("📈 Графики цен")
+    
+    current_pairs_for_chart = st.session_state.saved_pairs if st.session_state.saved_pairs else popular_pairs
+    selected_symbol = st.selectbox(
+        "Выберите актив для просмотра", 
+        current_pairs_for_chart, 
+        key="chart_symbol",
+        help=f"Доступно {len(current_pairs_for_chart)} пар из сохраненного списка"
+    )
+    
+    if selected_symbol and api_key and api_secret:
+        try:
+            with st.spinner(f"Загрузка данных для {selected_symbol}..."):
+                collector = BinanceDataCollector(api_key, api_secret)
+                df = collector.get_historical_data(selected_symbol, "1d", 90)
+            
+            if not df.empty:
+                # График цены
+                fig, ax = plt.subplots(figsize=(12, 6))
+                ax.plot(df.index, df['close'], linewidth=2, color='#ff4b4b')
+                ax.set_title(f"График цены {selected_symbol} за последние 90 дней", fontsize=16, fontweight='bold')
+                ax.set_xlabel("Дата")
+                ax.set_ylabel("Цена (USDT)")
+                ax.grid(True, alpha=0.3)
+                st.pyplot(fig)
+                
+                # Базовая статистика
+                st.subheader(f"📊 Статистика {selected_symbol}")
+                
+                col_chart1, col_chart2, col_chart3, col_chart4 = st.columns(4)
+                
+                with col_chart1:
+                    st.metric("Текущая цена", f"${df['close'].iloc[-1]:.6f}")
+                with col_chart2:
+                    st.metric("Максимум", f"${df['high'].max():.6f}")
+                with col_chart3:
+                    st.metric("Минимум", f"${df['low'].min():.6f}")
+                with col_chart4:
+                    price_change = ((df['close'].iloc[-1] / df['close'].iloc[0]) - 1) * 100
+                    st.metric("Изменение", f"{price_change:.2f}%")
+                    
+            else:
+                st.warning("Данные для выбранной пары недоступны.")
+        except Exception as e:
+            st.error(f"Ошибка при получении данных: {str(e)}")
+    elif not api_key or not api_secret:
+        st.warning("Введите API ключи в боковой панели для просмотра графиков")
+    else:
+        st.info("Выберите торговую пару для отображения графика")
+
+# Вкладка 5: Grid Trading (всегда доступна)
+with tab5:
     st.header("⚡ Симуляция сеточной торговли")
 
     # Параметры для сеточной торговли
@@ -462,120 +601,112 @@ with tab3:
             help="Таймфрейм для загрузки исторических данных"
         )
 
-    # Выбор пары для симуляции из отфильтрованных пар
-    if 'filtered_pairs' in st.session_state and st.session_state.filtered_pairs:
-        current_pairs_for_grid = st.session_state.filtered_pairs
-    else:
-        st.warning("⚠️ Сначала настройте фильтры в вкладке 'Настройки' для загрузки пар")
-        current_pairs_for_grid = []
-    
-    if current_pairs_for_grid:
-        selected_pair_for_grid = st.selectbox(
-            "Выберите пару для симуляции",
-            current_pairs_for_grid,
-            key="selected_pair_for_grid",
-            help=f"Доступно {len(current_pairs_for_grid)} отфильтрованных пар"
-        )
+    # Выбор пары для симуляции
+    current_pairs_for_grid = st.session_state.saved_pairs if st.session_state.saved_pairs else popular_pairs
+    selected_pair_for_grid = st.selectbox(
+        "Выберите пару для симуляции",
+        current_pairs_for_grid,
+        key="selected_pair_for_grid",
+        help=f"Доступно {len(current_pairs_for_grid)} пар из сохраненного списка"
+    )
 
-        if st.button("🚀 Запустить симуляцию для выбранной пары", type="primary"):
-            if not saved_api_key or not saved_api_secret:
-                st.error("Пожалуйста, введите и сохраните API ключи в боковой панели.")
-            elif not selected_pair_for_grid:
-                st.warning("Пожалуйста, выберите пару для симуляции.")
-            else:
-                try:
-                    # Инициализация инструментов
-                    with st.spinner("Подключение к Binance..."):
-                        collector = BinanceDataCollector(saved_api_key, saved_api_secret)
-                        grid_analyzer = GridAnalyzer(collector)
-                    st.success("Подключение успешно!")
+    if st.button("🚀 Запустить симуляцию для выбранной пары", type="primary"):
+        if not saved_api_key or not saved_api_secret:
+            st.error("Пожалуйста, введите и сохраните API ключи в боковой панели.")
+        elif not selected_pair_for_grid:
+            st.warning("Пожалуйста, выберите пару для симуляции.")
+        else:
+            try:
+                # Инициализация инструментов
+                with st.spinner("Подключение к Binance..."):
+                    collector = BinanceDataCollector(saved_api_key, saved_api_secret)
+                    grid_analyzer = GridAnalyzer(collector)
+                st.success("Подключение успешно!")
+                
+                # Получение исторических данных
+                with st.spinner(f"Загрузка исторических данных для {selected_pair_for_grid}..."):
+                    timeframe_in_minutes = {'15m': 15, '1h': 60, '4h': 240, '1d': 1440}
+                    total_minutes = simulation_days * 24 * 60
+                    limit = int(total_minutes / timeframe_in_minutes[timeframe])
                     
-                    # Получение исторических данных
-                    with st.spinner(f"Загрузка исторических данных для {selected_pair_for_grid}..."):
-                        timeframe_in_minutes = {'15m': 15, '1h': 60, '4h': 240, '1d': 1440}
-                        total_minutes = simulation_days * 24 * 60
-                        limit = int(total_minutes / timeframe_in_minutes[timeframe])
-                        
-                        df_for_simulation = collector.get_historical_data(selected_pair_for_grid, timeframe, limit)
+                    df_for_simulation = collector.get_historical_data(selected_pair_for_grid, timeframe, limit)
+                
+                if df_for_simulation.empty:
+                    st.error("Не удалось загрузить данные для симуляции.")
+                else:
+                    # Запуск симуляции
+                    with st.spinner(f"Запуск симуляции для {selected_pair_for_grid}..."):
+                        stats_long, stats_short, log_long_df, log_short_df = grid_analyzer.estimate_dual_grid_by_candles_realistic(
+                            df=df_for_simulation,
+                            initial_balance_long=initial_balance,
+                            initial_balance_short=initial_balance,
+                            grid_range_pct=grid_range_pct,
+                            grid_step_pct=grid_step_pct,
+                            order_size_usd_long=0,  # Автоматический расчет
+                            order_size_usd_short=0, # Автоматический расчет
+                            commission_pct=TAKER_COMMISSION_RATE * 100,
+                            stop_loss_pct=stop_loss_pct if stop_loss_pct > 0 else None,
+                            debug=False
+                        )
+
+                    st.success(f"✅ Симуляция для {selected_pair_for_grid} за {simulation_days} дней завершена!")
                     
-                    if df_for_simulation.empty:
-                        st.error("Не удалось загрузить данные для симуляции.")
-                    else:
-                        # Запуск симуляции
-                        with st.spinner(f"Запуск симуляции для {selected_pair_for_grid}..."):
-                            stats_long, stats_short, log_long_df, log_short_df = grid_analyzer.estimate_dual_grid_by_candles_realistic(
-                                df=df_for_simulation,
-                                initial_balance_long=initial_balance,
-                                initial_balance_short=initial_balance,
-                                grid_range_pct=grid_range_pct,
-                                grid_step_pct=grid_step_pct,
-                                order_size_usd_long=0,  # Автоматический расчет
-                                order_size_usd_short=0, # Автоматический расчет
-                                commission_pct=TAKER_COMMISSION_RATE * 100,
-                                stop_loss_pct=stop_loss_pct if stop_loss_pct > 0 else None,
-                                debug=False
-                            )
+                    # Отображение результатов
+                    st.subheader("📊 Результаты симуляции")
+                    
+                    # Расчет комбинированных результатов
+                    total_pnl = stats_long['total_pnl'] + stats_short['total_pnl']
+                    total_initial_balance = initial_balance * 2
+                    total_pnl_pct = (total_pnl / total_initial_balance) * 100 if total_initial_balance > 0 else 0
+                    total_trades = stats_long['trades_count'] + stats_short['trades_count']
+                    total_commission = stats_long['total_commission'] + stats_short['total_commission']
+                    
+                    col_result1, col_result2, col_result3 = st.columns(3)
+                    
+                    with col_result1:
+                        st.metric("Общий PnL", f"${total_pnl:.2f}", f"{total_pnl_pct:.2f}%")
+                    with col_result2:
+                        st.metric("Всего сделок", total_trades)
+                    with col_result3:
+                        st.metric("Всего комиссий", f"${total_commission:.2f}")
 
-                        st.success(f"✅ Симуляция для {selected_pair_for_grid} за {simulation_days} дней завершена!")
-                        
-                        # Отображение результатов
-                        st.subheader("📊 Результаты симуляции")
-                        
-                        # Расчет комбинированных результатов
-                        total_pnl = stats_long['total_pnl'] + stats_short['total_pnl']
-                        total_initial_balance = initial_balance * 2
-                        total_pnl_pct = (total_pnl / total_initial_balance) * 100 if total_initial_balance > 0 else 0
-                        total_trades = stats_long['trades_count'] + stats_short['trades_count']
-                        total_commission = stats_long['total_commission'] + stats_short['total_commission']
-                        
-                        col_result1, col_result2, col_result3 = st.columns(3)
-                        
-                        with col_result1:
-                            st.metric("Общий PnL", f"${total_pnl:.2f}", f"{total_pnl_pct:.2f}%")
-                        with col_result2:
-                            st.metric("Всего сделок", total_trades)
-                        with col_result3:
-                            st.metric("Всего комиссий", f"${total_commission:.2f}")
+                    st.subheader("📋 Детальная статистика")
+                    
+                    results_data = {
+                        "Метрика": ["Баланс Long", "PnL Long ($)", "PnL Long (%)", "Сделок Long", "Комиссии Long ($)",
+                                    "Баланс Short", "PnL Short ($)", "PnL Short (%)", "Сделок Short", "Комиссии Short ($)"],
+                        "Значение": [
+                            f"${stats_long['final_balance']:.2f}", f"${stats_long['total_pnl']:.2f}", f"{stats_long['total_pnl_pct']:.2f}%", str(stats_long['trades_count']), f"${stats_long['total_commission']:.2f}",
+                            f"${stats_short['final_balance']:.2f}", f"${stats_short['total_pnl']:.2f}", f"{stats_short['total_pnl_pct']:.2f}%", str(stats_short['trades_count']), f"${stats_short['total_commission']:.2f}"
+                        ]
+                    }
+                    # Приводим все значения к строкам для избежания ошибки Arrow
+                    results_df = pd.DataFrame(results_data)
+                    results_df['Значение'] = results_df['Значение'].astype(str)
+                    st.dataframe(results_df, use_container_width=True)
 
-                        st.subheader("📋 Детальная статистика")
-                        
-                        results_data = {
-                            "Метрика": ["Баланс Long", "PnL Long ($)", "PnL Long (%)", "Сделок Long", "Комиссии Long ($)",
-                                        "Баланс Short", "PnL Short ($)", "PnL Short (%)", "Сделок Short", "Комиссии Short ($)"],
-                            "Значение": [
-                                f"${stats_long['final_balance']:.2f}", f"${stats_long['total_pnl']:.2f}", f"{stats_long['total_pnl_pct']:.2f}%", str(stats_long['trades_count']), f"${stats_long['total_commission']:.2f}",
-                                f"${stats_short['final_balance']:.2f}", f"${stats_short['total_pnl']:.2f}", f"{stats_short['total_pnl_pct']:.2f}%", str(stats_short['trades_count']), f"${stats_short['total_commission']:.2f}"
-                            ]
-                        }
-                        # Приводим все значения к строкам для избежания ошибки Arrow
-                        results_df = pd.DataFrame(results_data)
-                        results_df['Значение'] = results_df['Значение'].astype(str)
-                        st.dataframe(results_df, use_container_width=True)
+                    # Отображение логов сделок
+                    with st.expander("📋 Показать логи сделок"):
+                        st.subheader("Лог сделок Long")
+                        if log_long_df: # Проверяем, что список не пустой
+                            df_long = pd.DataFrame(log_long_df)
+                            st.dataframe(df_long, use_container_width=True)
+                        else:
+                            st.info("Сделок по Long не было.")
+                            
+                        st.subheader("Лог сделок Short")
+                        if log_short_df: # Проверяем, что список не пустой
+                            df_short = pd.DataFrame(log_short_df)
+                            st.dataframe(df_short, use_container_width=True)
+                        else:
+                            st.info("Сделок по Short не было.")
 
-                        # Отображение логов сделок
-                        with st.expander("📋 Показать логи сделок"):
-                            st.subheader("Лог сделок Long")
-                            if log_long_df: # Проверяем, что список не пустой
-                                df_long = pd.DataFrame(log_long_df)
-                                st.dataframe(df_long, use_container_width=True)
-                            else:
-                                st.info("Сделок по Long не было.")
-                                
-                            st.subheader("Лог сделок Short")
-                            if log_short_df: # Проверяем, что список не пустой
-                                df_short = pd.DataFrame(log_short_df)
-                                st.dataframe(df_short, use_container_width=True)
-                            else:
-                                st.info("Сделок по Short не было.")
+            except Exception as e:
+                st.error(f"Произошла ошибка во время симуляции: {e}")
+                st.exception(e)
 
-                except Exception as e:
-                    st.error(f"Произошла ошибка во время симуляции: {e}")
-                    st.exception(e)
-    else:
-        st.info("Загрузите список торговых пар в вкладке 'Настройки'")
-
-# Вкладка 4: Авто-оптимизация
-with tab4:
+# Вкладка 6: Авто-оптимизация
+with tab6:
     st.header("🤖 Автоматическая оптимизация параметров")
     
     st.markdown("""
@@ -592,23 +723,13 @@ with tab4:
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        # Используем отфильтрованные пары из первой вкладки
-        if 'filtered_pairs' in st.session_state and st.session_state.filtered_pairs:
-            current_pairs_for_opt = st.session_state.filtered_pairs
-        else:
-            st.warning("⚠️ Сначала настройте фильтры в вкладке 'Настройки' для загрузки пар")
-            current_pairs_for_opt = []
-        
-        if current_pairs_for_opt:
-            opt_pair = st.selectbox(
-                "Пара для оптимизации",
-                current_pairs_for_opt,
-                key="opt_pair",
-                help=f"Доступно {len(current_pairs_for_opt)} отфильтрованных пар"
-            )
-        else:
-            st.info("Загрузите список торговых пар в вкладке 'Настройки'")
-            opt_pair = None
+        current_pairs_for_opt = st.session_state.saved_pairs if st.session_state.saved_pairs else popular_pairs
+        opt_pair = st.selectbox(
+            "Пара для оптимизации",
+            current_pairs_for_opt,
+            key="opt_pair",
+            help=f"Доступно {len(current_pairs_for_opt)} пар из сохраненного списка"
+        )
         
         opt_balance = st.slider(
             "Баланс для тестов (USDT)",
@@ -676,20 +797,17 @@ with tab4:
     
     # Кнопка запуска оптимизации
     if st.button("🚀 Запустить оптимизацию", type="primary", key="start_optimization"):
-        # Исправляем проблему с API ключами - используем загруженные ключи
-        if not api_key or not api_secret:
-            st.error("Пожалуйста, введите API ключи в боковой панели.")
-        elif not opt_pair:
-            st.error("Пожалуйста, сначала загрузите пары в вкладке 'Настройки'.")
+        if not saved_api_key or not saved_api_secret:
+            st.error("Пожалуйста, введите и сохраните API ключи в боковой панели.")
         else:
             try:
                 # Прогресс бар и контейнеры для вывода
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 
-                # Инициализация с правильными API ключами
+                # Инициализация
                 status_text.text("Инициализация...")
-                collector = BinanceDataCollector(api_key, api_secret)  # Используем ключи из sidebar
+                collector = BinanceDataCollector(saved_api_key, saved_api_secret)
                 grid_analyzer = GridAnalyzer(collector)
                 optimizer = GridOptimizer(grid_analyzer, TAKER_COMMISSION_RATE)
                 
@@ -832,4 +950,78 @@ with tab4:
                 st.error(f"Ошибка во время оптимизации: {e}")
                 st.exception(e)
 
-# Удаляем старый блок запуска анализа - теперь всё происходит в вкладке "Настройки"
+# Основной блок запуска анализа (если кнопка нажата)
+if start_analysis:
+    with log_container:
+        if not api_key or not api_secret:
+            st.error("❌ Введите API ключи для начала анализа.")
+        else:
+            try:
+                # Прогресс анализа
+                progress_analysis = st.progress(0)
+                status_analysis = st.empty()
+                
+                # Инициализация классов
+                status_analysis.info("🔧 Инициализация модулей...")
+                progress_analysis.progress(10)
+                
+                collector = BinanceDataCollector(api_key, api_secret)
+                processor = DataProcessor(collector)
+                analyzer = CorrelationAnalyzer(collector) # Исправлено: передаем collector
+                portfolio_builder = PortfolioBuilder(collector, analyzer) # Исправлено: передаем collector и analyzer
+                
+                progress_analysis.progress(30)
+                
+                # Получение и фильтрация пар
+                status_analysis.info("📊 Получение и фильтрация торговых пар...")
+                all_pairs = collector.get_all_usdt_pairs()
+                filtered_pairs = processor.filter_pairs_by_volume_and_price(
+                    all_pairs, 
+                    min_volume=min_volume, 
+                    min_price=min_price, 
+                    max_price=max_price
+                )
+                
+                progress_analysis.progress(70)
+                
+                # Ограничиваем количество пар для анализа
+                pairs_to_analyze = filtered_pairs[:max_pairs]
+                
+                progress_analysis.progress(90)
+                status_analysis.success(f"✅ Отобрано {len(pairs_to_analyze)} пар для анализа.")
+                
+                # Сохраняем результаты фильтрации в session_state
+                st.session_state.filtered_pairs = pairs_to_analyze
+                
+                progress_analysis.progress(100)
+                
+                # Обновляем вкладку 2 с отфильтрованными парами
+                st.success("🎉 Анализ завершен! Переключитесь на вкладку 'Фильтр торговых пар' для просмотра результатов.")
+                
+                # Автоматически показываем результаты
+                st.subheader("📋 Результаты фильтрации")
+                
+                col_res1, col_res2, col_res3 = st.columns(3)
+                with col_res1:
+                    st.metric("Всего пар USDT", len(all_pairs))
+                with col_res2:
+                    st.metric("Прошли фильтр", len(filtered_pairs))
+                with col_res3:
+                    st.metric("Выбрано для анализа", len(pairs_to_analyze))
+                
+                pairs_df = pd.DataFrame({
+                    'Символ': pairs_to_analyze,
+                    'Описание': [f"Торговая пара {p}" for p in pairs_to_analyze],
+                    'Статус': ['✅ Готов к Grid Trading'] * len(pairs_to_analyze)
+                })
+                st.dataframe(pairs_df, use_container_width=True)
+                
+                # Кнопка для сохранения отфильтрованного списка
+                if st.button("💾 Сохранить отфильтрованный список как основной"):
+                    st.session_state.saved_pairs = pairs_to_analyze
+                    save_pairs_list(pairs_to_analyze)
+                    st.success("Отфильтрованный список сохранен как основной!")
+                
+            except Exception as e:
+                status_analysis.error(f"❌ Произошла ошибка: {str(e)}")
+                st.exception(e) # Выводим полный traceback для отладки

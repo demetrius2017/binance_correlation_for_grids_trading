@@ -178,6 +178,10 @@ if 'optimization_params' not in st.session_state:
 if 'optimization_best_result' not in st.session_state:
     st.session_state.optimization_best_result = None
 
+# Переменная для переноса параметров из оптимизации в Grid Trading
+if 'transfer_params' not in st.session_state:
+    st.session_state.transfer_params = None
+
 # Заголовок приложения
 st.title("Анализатор торговых пар Binance")
 st.markdown("---")
@@ -573,18 +577,49 @@ with tab3:
 # Вкладка 3: Grid Trading (всегда доступна)
 with tab3:
     st.header("⚡ Симуляция сеточной торговли")
+    
+    # Проверяем, есть ли переданные параметры из оптимизации
+    if st.session_state.transfer_params is not None:
+        transferred = st.session_state.transfer_params
+        st.success(f"""
+        🎯 **Параметры загружены из:** {transferred['source']}
+        
+        • **Пара**: {transferred['pair']}
+        • **Диапазон сетки**: {transferred['grid_range_pct']:.1f}%
+        • **Шаг сетки**: {transferred['grid_step_pct']:.2f}%
+        • **Стоп-лосс**: {transferred['stop_loss_pct']:.1f}%
+        • **Баланс**: {transferred['initial_balance']} USDT
+        • **Таймфрейм**: {transferred['timeframe']}
+        • **Период**: {transferred['simulation_days']} дней
+        """)
+        
+        col_clear, col_use = st.columns(2)
+        with col_clear:
+            if st.button("🗑️ Очистить загруженные параметры"):
+                st.session_state.transfer_params = None
+                st.rerun()
+        with col_use:
+            if st.button("✅ Использовать эти параметры", type="primary"):
+                st.info("Параметры применены! Настройте дополнительные параметры ниже и запустите симуляцию.")
+        
+        st.markdown("---")
 
     # Параметры для сеточной торговли
     st.subheader("🎛️ Параметры сетки")
     
     col1, col2, col3 = st.columns(3)
     
+    # Определяем значения по умолчанию из переданных параметров
+    default_grid_range = st.session_state.transfer_params['grid_range_pct'] if st.session_state.transfer_params else 20.0
+    default_grid_step = st.session_state.transfer_params['grid_step_pct'] if st.session_state.transfer_params else 1.0  
+    default_balance = st.session_state.transfer_params['initial_balance'] if st.session_state.transfer_params else 1000
+    
     with col1:
         grid_range_pct = st.slider(
             "Диапазон сетки (%)", 
             min_value=5.0, 
             max_value=50.0, 
-            value=20.0,
+            value=float(default_grid_range),
             step=1.0,
             help="Процентный диапазон для размещения сетки"
         )
@@ -594,7 +629,7 @@ with tab3:
             "Шаг сетки (%)", 
             min_value=0.1, 
             max_value=5.0, 
-            value=1.0,
+            value=float(default_grid_step),
             step=0.1,
             help="Процентный шаг между уровнями сетки"
         )
@@ -604,7 +639,7 @@ with tab3:
             "Начальный баланс (USDT)",
             min_value=100,
             max_value=50000,
-            value=1000,
+            value=int(default_balance),
             step=100,
             help="Начальный капитал для симуляции"
         )
@@ -613,13 +648,20 @@ with tab3:
     
     # Дополнительные параметры симуляции
     st.subheader("⚙️ Дополнительные параметры")
+    
+    # Определяем значения по умолчанию из переданных параметров
+    default_days = st.session_state.transfer_params['simulation_days'] if st.session_state.transfer_params else 90
+    default_stop_loss = st.session_state.transfer_params['stop_loss_pct'] if st.session_state.transfer_params else 25.0
+    default_timeframe = st.session_state.transfer_params['timeframe'] if st.session_state.transfer_params else "1h"
+    default_timeframe_index = ["15m", "1h", "4h", "1d"].index(default_timeframe) if default_timeframe in ["15m", "1h", "4h", "1d"] else 1
+    
     col_a, col_b, col_c = st.columns(3)
     with col_a:
         simulation_days = st.slider(
             "Срок симуляции (дни)",
             min_value=7,
             max_value=365,
-            value=90,
+            value=int(default_days),
             step=1,
             help="Количество дней исторических данных для симуляции"
         )
@@ -628,7 +670,7 @@ with tab3:
             "Стоп-лосс (%)",
             min_value=0.0,
             max_value=50.0,
-            value=25.0,
+            value=float(default_stop_loss),
             step=2.5,
             help="Процент просадки для остановки торговли. 0 - отключить. Ускоряет тестирование плохих параметров."
         )
@@ -636,7 +678,7 @@ with tab3:
         timeframe = st.selectbox(
             "Таймфрейм",
             options=["15m", "1h", "4h", "1d"],
-            index=1,
+            index=default_timeframe_index,
             help="Таймфрейм для загрузки исторических данных"
         )
 
@@ -648,9 +690,17 @@ with tab3:
         current_pairs_for_grid = []
     
     if current_pairs_for_grid:
+        # Определяем индекс выбранной пары из переданных параметров
+        default_pair = st.session_state.transfer_params['pair'] if st.session_state.transfer_params else current_pairs_for_grid[0]
+        try:
+            default_pair_index = current_pairs_for_grid.index(default_pair) if default_pair in current_pairs_for_grid else 0
+        except (ValueError, IndexError):
+            default_pair_index = 0
+            
         selected_pair_for_grid = st.selectbox(
             "Выберите пару для симуляции",
             current_pairs_for_grid,
+            index=default_pair_index,
             key="selected_pair_for_grid",
             help=f"Доступно {len(current_pairs_for_grid)} отфильтрованных пар"
         )
@@ -1065,6 +1115,42 @@ with tab4:
                 
                 results_df = pd.DataFrame(results_data)
                 st.dataframe(results_df, use_container_width=True)
+                
+                # Добавляем кнопки "Тест" для топ-5 результатов
+                st.write("**Быстрый тест параметров:**")
+                cols = st.columns(5)
+                for i, result in enumerate(top_5):
+                    with cols[i]:
+                        rank = i + 1
+                        if st.button(f"🧪 #{rank}", key=f"test_top5_btn_{i}"):
+                            # Сохраняем параметры для переноса
+                            st.session_state.transfer_params = {
+                                'pair': st.session_state.optimization_params['pair'],
+                                'grid_range_pct': result.params.grid_range_pct,
+                                'grid_step_pct': result.params.grid_step_pct,
+                                'stop_loss_pct': result.params.stop_loss_pct,
+                                'initial_balance': st.session_state.optimization_params['balance'],
+                                'timeframe': st.session_state.optimization_params['timeframe'],
+                                'simulation_days': st.session_state.optimization_params['days'],
+                                'source': f"Топ-5 #{rank} (скор: {result.combined_score:.2f}%)"
+                            }
+                            st.success(f"✅ Параметры #{rank} готовы к тесту!")
+                            
+            # Кнопка "Тест" для лучшего результата
+            if st.button("🏆 Тестировать лучший результат", type="primary"):
+                # Сохраняем параметры лучшего результата для переноса
+                st.session_state.transfer_params = {
+                    'pair': st.session_state.optimization_params['pair'],
+                    'grid_range_pct': best_result.params.grid_range_pct,
+                    'grid_step_pct': best_result.params.grid_step_pct,
+                    'stop_loss_pct': best_result.params.stop_loss_pct,
+                    'initial_balance': st.session_state.optimization_params['balance'],
+                    'timeframe': st.session_state.optimization_params['timeframe'],
+                    'simulation_days': st.session_state.optimization_params['days'],
+                    'source': f"Лучший результат (скор: {best_result.combined_score:.2f}%)"
+                }
+                st.success("🏆 Лучшие параметры готовы! Перейдите во вкладку Grid Trading для тестирования.")
+                st.balloons()
         
         st.markdown("---")
     
@@ -1199,7 +1285,38 @@ with tab4:
                             })
                         
                         results_df = pd.DataFrame(results_data)
+                        
+                        # Отображаем таблицу с кнопками "Тест"
                         st.dataframe(results_df, use_container_width=True)
+                        
+                        # Добавляем кнопки "Тест" для каждого результата
+                        st.subheader("🧪 Тестирование параметров")
+                        st.write("Нажмите кнопку 'Тест' для переноса параметров во вкладку Grid Trading:")
+                        
+                        # Создаем колонки для кнопок
+                        cols_per_row = 5
+                        for i in range(0, min(10, len(top_results)), cols_per_row):
+                            cols = st.columns(cols_per_row)
+                            for j in range(cols_per_row):
+                                idx = i + j
+                                if idx < len(top_results):
+                                    result = top_results[idx]
+                                    with cols[j]:
+                                        rank = idx + 1
+                                        if st.button(f"🧪 Тест #{rank}", key=f"test_btn_{idx}"):
+                                            # Сохраняем параметры для переноса
+                                            st.session_state.transfer_params = {
+                                                'pair': st.session_state.optimization_params['pair'],
+                                                'grid_range_pct': result.params.grid_range_pct,
+                                                'grid_step_pct': result.params.grid_step_pct,
+                                                'stop_loss_pct': result.params.stop_loss_pct,
+                                                'initial_balance': st.session_state.optimization_params['balance'],
+                                                'timeframe': st.session_state.optimization_params['timeframe'],
+                                                'simulation_days': st.session_state.optimization_params['days'],
+                                                'source': f"Оптимизация #{rank} (скор: {result.combined_score:.2f}%)"
+                                            }
+                                            st.success(f"✅ Параметры #{rank} сохранены! Перейдите во вкладку Grid Trading для тестирования.")
+                                            st.balloons()
                         
                         # Пояснения к новым метрикам
                         with st.expander("📚 Пояснения к метрикам"):

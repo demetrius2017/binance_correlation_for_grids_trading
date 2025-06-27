@@ -793,11 +793,8 @@ with tab3:
                         
                         # Получение исторических данных
                         with st.spinner(f"Загрузка исторических данных для {selected_pair_for_grid}..."):
-                            timeframe_in_minutes = {'15m': 15, '1h': 60, '4h': 240, '1d': 1440}
-                            total_minutes = simulation_days * 24 * 60
-                            limit = int(total_minutes / timeframe_in_minutes[timeframe])
-                            
-                            df_for_simulation = collector.get_historical_data(selected_pair_for_grid, timeframe, limit)
+                            # Используем правильный вызов с количеством дней
+                            df_for_simulation = collector.get_historical_data(selected_pair_for_grid, timeframe, simulation_days)
                         
                         if df_for_simulation.empty:
                             st.error("Не удалось загрузить данные для симуляции.")
@@ -1180,11 +1177,8 @@ with tab4:
                     status_text.text(f"Загрузка данных для {opt_pair}...")
                     progress_bar.progress(10)
                     
-                    timeframe_in_minutes = {'15m': 15, '1h': 60, '4h': 240, '1d': 1440}
-                    total_minutes = opt_days * 24 * 60
-                    limit = int(total_minutes / timeframe_in_minutes[opt_timeframe])
-                
-                    df_opt = collector.get_historical_data(opt_pair, opt_timeframe, limit)
+                    # Используем правильный вызов с количеством дней
+                    df_opt = collector.get_historical_data(opt_pair, opt_timeframe, opt_days)
                     
                     if df_opt.empty:
                         st.error("Не удалось загрузить данные для оптимизации.")

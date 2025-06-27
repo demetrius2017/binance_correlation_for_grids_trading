@@ -6,7 +6,7 @@
 import random
 import numpy as np
 import pandas as pd
-from typing import List, Dict, Tuple, Any
+from typing import List, Dict, Tuple, Any, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 import time
@@ -34,6 +34,10 @@ class OptimizationResult:
     combined_score: float
     trades_count: int
     drawdown: float
+    max_drawdown_pct: float = 0.0
+    sharpe_ratio: float = 0.0
+    calmar_ratio: float = 0.0
+    profit_factor: float = 0.0
     
 class GridOptimizer:
     """Класс для оптимизации параметров Grid Trading"""
@@ -46,7 +50,7 @@ class GridOptimizer:
         self.param_bounds = {
             'grid_range_pct': (5.0, 50.0),    # 5-50%
             'grid_step_pct': (0.1, 5.0),      # 0.1-5%
-            'stop_loss_pct': (0.0, 15.0)      # 0-15%
+            'stop_loss_pct': (0.0, 80.0)      # 0-80% (увеличено для большей гибкости)
         }
         
     def create_random_params(self) -> OptimizationParams:
@@ -59,8 +63,8 @@ class GridOptimizer:
         grid_step_options = [round(x * 0.5, 1) for x in range(1, 11)]  # [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0]
         grid_step_pct = random.choice(grid_step_options)
         
-        # Стоп-лосс кратно 5% (0, 5, 10, 15)
-        stop_loss_options = [0.0, 5.0, 10.0, 15.0]
+        # Стоп-лосс кратно 5% (0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80)
+        stop_loss_options = [0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 60.0, 70.0, 80.0]
         stop_loss_pct = random.choice(stop_loss_options)
         
         return OptimizationParams(
@@ -105,7 +109,7 @@ class GridOptimizer:
             
         # Мутация стоп-лосса (кратно 5%)
         if random.random() < mutation_rate:
-            stop_loss_options = [0.0, 5.0, 10.0, 15.0]
+            stop_loss_options = [0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 60.0, 70.0, 80.0]
             current_idx = stop_loss_options.index(params.stop_loss_pct) if params.stop_loss_pct in stop_loss_options else 0
             # Выбираем соседний элемент
             if current_idx > 0 and current_idx < len(stop_loss_options) - 1:
@@ -121,6 +125,19 @@ class GridOptimizer:
     def params_to_key(self, params: OptimizationParams) -> str:
         """Создает уникальный ключ для параметров"""
         return f"{params.grid_range_pct:.1f}_{params.grid_step_pct:.1f}_{params.stop_loss_pct:.1f}"
+    
+    def remove_duplicate_results(self, results_list: List[OptimizationResult]) -> List[OptimizationResult]:
+        """Удаляет дублирующиеся результаты из списка"""
+        seen_keys = set()
+        unique_results = []
+        
+        for result in results_list:
+            param_key = self.params_to_key(result.params)
+            if param_key not in seen_keys:
+                seen_keys.add(param_key)
+                unique_results.append(result)
+        
+        return unique_results
     
     def remove_duplicate_params(self, params_list: List[OptimizationParams]) -> List[OptimizationParams]:
         """Удаляет дублирующиеся параметры из списка"""
@@ -148,7 +165,7 @@ class GridOptimizer:
         """Оценка параметров на бэктесте и форвард тесте"""
         
         try:
-            # Бэктест
+            # Используем ТОЛЬКО стоп-лосс как ограничитель, убираем max_drawdown_pct
             stop_loss = params.stop_loss_pct if params.stop_loss_pct > 0 else None
             
             stats_long_bt, stats_short_bt, _, _ = self.grid_analyzer.estimate_dual_grid_by_candles_realistic(
@@ -161,10 +178,11 @@ class GridOptimizer:
                 order_size_usd_short=0,
                 commission_pct=self.commission_rate * 100,
                 stop_loss_pct=stop_loss,
+                max_drawdown_pct=None,  # Убираем ограничение по drawdown
                 debug=False
             )
             
-            # Форвард тест
+            # Форвард тест только со стоп-лоссом
             stats_long_ft, stats_short_ft, _, _ = self.grid_analyzer.estimate_dual_grid_by_candles_realistic(
                 df=forward_df,
                 initial_balance_long=initial_balance,
@@ -175,6 +193,7 @@ class GridOptimizer:
                 order_size_usd_short=0,
                 commission_pct=self.commission_rate * 100,
                 stop_loss_pct=stop_loss,
+                max_drawdown_pct=None,  # Убираем ограничение по drawdown
                 debug=False
             )
             
@@ -182,11 +201,31 @@ class GridOptimizer:
             backtest_pnl_pct = ((stats_long_bt['total_pnl'] + stats_short_bt['total_pnl']) / (initial_balance * 2)) * 100
             forward_pnl_pct = ((stats_long_ft['total_pnl'] + stats_short_ft['total_pnl']) / (initial_balance * 2)) * 100
             
-            # Считаем стабильность как разность между бэктестом и форвардом
-            stability_penalty = abs(backtest_pnl_pct - forward_pnl_pct) * 0.5
+            # Извлекаем продвинутые метрики
+            avg_drawdown = (stats_long_bt.get('max_drawdown_pct', 0) + stats_short_bt.get('max_drawdown_pct', 0) + 
+                           stats_long_ft.get('max_drawdown_pct', 0) + stats_short_ft.get('max_drawdown_pct', 0)) / 4
             
-            # Комбинированный скор: среднее арифметическое минус штраф за нестабильность
-            combined_score = (backtest_pnl_pct + forward_pnl_pct) / 2 - stability_penalty
+            avg_sharpe = (stats_long_bt.get('sharpe_ratio', 0) + stats_short_bt.get('sharpe_ratio', 0) + 
+                         stats_long_ft.get('sharpe_ratio', 0) + stats_short_ft.get('sharpe_ratio', 0)) / 4
+            
+            avg_calmar = (stats_long_bt.get('calmar_ratio', 0) + stats_short_bt.get('calmar_ratio', 0) + 
+                         stats_long_ft.get('calmar_ratio', 0) + stats_short_ft.get('calmar_ratio', 0)) / 4
+            
+            avg_profit_factor = (stats_long_bt.get('profit_factor', 0) + stats_short_bt.get('profit_factor', 0) + 
+                               stats_long_ft.get('profit_factor', 0) + stats_short_ft.get('profit_factor', 0)) / 4
+
+            # Обновленный алгоритм scoring
+            base_score = (backtest_pnl_pct + forward_pnl_pct) / 2
+
+            # Штрафы
+            stability_penalty = abs(backtest_pnl_pct - forward_pnl_pct) * 0.5
+            dd_penalty = avg_drawdown * 0.1  # 0.1% за каждый % просадки
+
+            # Бонусы
+            sharpe_bonus = avg_sharpe * 2  # Удваиваем Sharpe ratio
+
+            # Итоговый скор
+            combined_score = base_score - stability_penalty - dd_penalty + sharpe_bonus
             
             # Общее количество сделок
             total_trades = stats_long_bt['trades_count'] + stats_short_bt['trades_count'] + \
@@ -201,7 +240,11 @@ class GridOptimizer:
                 forward_score=forward_pnl_pct,
                 combined_score=combined_score,
                 trades_count=total_trades,
-                drawdown=drawdown
+                drawdown=drawdown,
+                max_drawdown_pct=avg_drawdown,
+                sharpe_ratio=avg_sharpe,
+                calmar_ratio=avg_calmar,
+                profit_factor=avg_profit_factor
             )
             
         except Exception as e:
@@ -212,7 +255,11 @@ class GridOptimizer:
                 forward_score=-100.0,
                 combined_score=-100.0,
                 trades_count=0,
-                drawdown=100.0
+                drawdown=100.0,
+                max_drawdown_pct=100.0,
+                sharpe_ratio=0.0,
+                calmar_ratio=0.0,
+                profit_factor=0.0
             )
     
     def optimize_genetic(self, df: pd.DataFrame, initial_balance: float, 
@@ -251,7 +298,7 @@ class GridOptimizer:
         while len(population) < population_size:
             population.append(self.create_random_params())
             
-        best_results = []
+        all_results = []  # Хранение ВСЕХ результатов из всех поколений
         
         for generation in range(generations):
             if progress_callback:
@@ -278,8 +325,8 @@ class GridOptimizer:
             # Сортировка по комбинированному скору
             generation_results.sort(key=lambda x: x.combined_score, reverse=True)
             
-            # Сохранение лучшего результата поколения
-            best_results.append(generation_results[0])
+            # Добавляем ВСЕ результаты поколения к общему списку
+            all_results.extend(generation_results)
             
             if progress_callback:
                 best = generation_results[0]
@@ -304,11 +351,15 @@ class GridOptimizer:
                 else:  # Случайные особи для разнообразия
                     new_population.append(self.create_random_params())
             
-            population = new_population
+            # Удаляем дубликаты из новой популяции и добираем случайными если нужно
+            population = self.remove_duplicate_params(new_population)
+            while len(population) < population_size:
+                population.append(self.create_random_params())
         
-        # Возвращаем лучшие результаты из всех поколений
-        best_results.sort(key=lambda x: x.combined_score, reverse=True)
-        return best_results
+        # Удаляем дубликаты результатов и сортируем
+        unique_results = self.remove_duplicate_results(all_results)
+        unique_results.sort(key=lambda x: x.combined_score, reverse=True)
+        return unique_results
     
     def grid_search_adaptive(self, df: pd.DataFrame, initial_balance: float,
                            forward_test_pct=0.3, iterations=3, 
@@ -344,7 +395,7 @@ class GridOptimizer:
                 # Используем кратные значения вместо случайных float
                 grid_range_options = list(range(5, 55, 5))  # [5, 10, 15, ..., 50]
                 grid_step_options = [round(x * 0.5, 1) for x in range(1, 11)]  # [0.5, 1.0, 1.5, ..., 5.0]
-                stop_loss_options = [0.0, 5.0, 10.0, 15.0]
+                stop_loss_options = [0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 60.0, 70.0, 80.0]
                 
                 params = OptimizationParams(
                     grid_range_pct=float(random.choice(grid_range_options)),
@@ -419,6 +470,7 @@ class GridOptimizer:
                                     f"Новые границы: Range {current_bounds['grid_range_pct']}, "
                                     f"Step {current_bounds['grid_step_pct']}")
         
-        # Сортировка всех результатов
-        all_results.sort(key=lambda x: x.combined_score, reverse=True)
-        return all_results
+        # Удаляем дубликаты и сортируем все результаты
+        unique_results = self.remove_duplicate_results(all_results)
+        unique_results.sort(key=lambda x: x.combined_score, reverse=True)
+        return unique_results

@@ -521,6 +521,7 @@ class GridAnalyzer:
         commission_pct: float = 0.1,
         stop_loss_pct: Optional[float] = None,
         stop_loss_strategy: str = 'none',
+        max_drawdown_pct: Optional[float] = None,
         debug: bool = False
     ) -> Tuple[Dict[str, Any], Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
@@ -553,6 +554,19 @@ class GridAnalyzer:
         open_orders_short: Dict[float, float] = {}
         trade_log_long: List[Dict[str, Any]] = []
         trade_log_short: List[Dict[str, Any]] = []
+
+        # Переменные для отслеживания просадки
+        peak_equity = initial_balance_long + initial_balance_short
+        max_drawdown_reached = 0.0
+        drawdown_stop_triggered = False
+
+        # Счетчики срабатываний стоп-лосса
+        stop_loss_triggers_long = 0
+        stop_loss_triggers_short = 0
+
+        # Инициализация переменных для расчета плавающего PnL
+        floating_pnl_long = 0.0
+        floating_pnl_short = 0.0
 
         # Расчет количества уровней и размера ордера
         num_levels = int(grid_range_pct / grid_step_pct) if grid_step_pct > 0 else 0
@@ -654,6 +668,7 @@ class GridAnalyzer:
 
                 # Обработка стоп-лоссов для Long позиций если суммарный убыток превысил порог
                 if stop_loss_triggered_long:
+                    stop_loss_triggers_long += 1  # Увеличиваем счетчик
                     for entry_price, size in list(open_orders_long.items()):
                         # Закрытие по стоп-лоссу
                         entry_value = entry_price * size
@@ -693,6 +708,7 @@ class GridAnalyzer:
                 
                 # Обработка стоп-лоссов для Short позиций если суммарный убыток превысил порог
                 if stop_loss_triggered_short:
+                    stop_loss_triggers_short += 1  # Увеличиваем счетчик
                     for entry_price, size in list(open_orders_short.items()):
                         # Закрытие по стоп-лоссу
                         entry_value = entry_price * size
@@ -745,6 +761,32 @@ class GridAnalyzer:
                     open_orders_short.clear()
                     if debug:
                         print(f"       * Остановка торговли после стоп-лосса.")
+
+            # Проверка максимальной просадки в конце каждой свечи
+            if max_drawdown_pct is not None:
+                # Рассчитываем текущий капитал (баланс + плавающий PnL)
+                current_equity = balance_long + balance_short + floating_pnl_long + floating_pnl_short
+
+                # Обновляем пиковое значение
+                if current_equity > peak_equity:
+                    peak_equity = current_equity
+
+                # Рассчитываем текущую просадку
+                current_drawdown = ((peak_equity - current_equity) / peak_equity) * 100
+
+                # Обновляем максимальную просадку
+                if current_drawdown > max_drawdown_reached:
+                    max_drawdown_reached = current_drawdown
+
+                if debug:
+                    print(f"  DD Check: Current equity: ${current_equity:.2f}, Peak: ${peak_equity:.2f}, Drawdown: {current_drawdown:.2f}%")
+
+                # Проверяем превышение лимита
+                if current_drawdown >= max_drawdown_pct:
+                    drawdown_stop_triggered = True
+                    if debug:
+                        print(f"  !!! ОСТАНОВКА ПО DRAWDOWN: {current_drawdown:.2f}% >= {max_drawdown_pct}% !!!")
+                    break  # Выходим из основного цикла
 
         # Закрытие всех открытых ордеров по последней цене
         last_price = df['close'].iloc[-1]
@@ -847,7 +889,9 @@ class GridAnalyzer:
             'losing_trades': sum(1 for trade in trade_log_long if trade.get('net_pnl_usd', 0) < 0),
             'win_rate': sum(1 for trade in trade_log_long if trade.get('net_pnl_usd', 0) > 0) / len(trade_log_long) * 100 if trade_log_long else 0,
             'total_commission': sum(trade.get('commission_usd', 0) for trade in trade_log_long),
-            'avg_profit_per_trade': sum(trade.get('net_pnl_usd', 0) for trade in trade_log_long) / len(trade_log_long) if trade_log_long else 0
+            'avg_profit_per_trade': sum(trade.get('net_pnl_usd', 0) for trade in trade_log_long) / len(trade_log_long) if trade_log_long else 0,
+            'stop_loss_triggers': stop_loss_triggers_long,  # Количество срабатываний стоп-лосса
+            'max_drawdown_pct': max_drawdown_reached  # Максимальная просадка для информации
         }
         
         stats_short = {
@@ -859,8 +903,23 @@ class GridAnalyzer:
             'losing_trades': sum(1 for trade in trade_log_short if trade.get('net_pnl_usd', 0) < 0),
             'win_rate': sum(1 for trade in trade_log_short if trade.get('net_pnl_usd', 0) > 0) / len(trade_log_short) * 100 if trade_log_short else 0,
             'total_commission': sum(trade.get('commission_usd', 0) for trade in trade_log_short),
-            'avg_profit_per_trade': sum(trade.get('net_pnl_usd', 0) for trade in trade_log_short) / len(trade_log_short) if trade_log_short else 0
+            'avg_profit_per_trade': sum(trade.get('net_pnl_usd', 0) for trade in trade_log_short) / len(trade_log_short) if trade_log_short else 0,
+            'stop_loss_triggers': stop_loss_triggers_short,  # Количество срабатываний стоп-лосса
+            'max_drawdown_pct': max_drawdown_reached  # Максимальная просадка для информации
         }
+
+        # Добавляем продвинутые метрики
+        advanced_long = self.calculate_advanced_metrics(trade_log_long, initial_balance_long)
+        advanced_short = self.calculate_advanced_metrics(trade_log_short, initial_balance_short)
+        
+        stats_long.update(advanced_long)
+        stats_short.update(advanced_short)
+
+        # Добавляем общую информацию о drawdown контроле
+        stats_long['drawdown_stop_triggered'] = drawdown_stop_triggered
+        stats_short['drawdown_stop_triggered'] = drawdown_stop_triggered
+        stats_long['max_drawdown_reached'] = max_drawdown_reached
+        stats_short['max_drawdown_reached'] = max_drawdown_reached
 
         if debug:
             print("\n--- Итоговая статистика ---")
@@ -874,6 +933,83 @@ class GridAnalyzer:
                   f"({(stats_long['total_pnl_pct'] + stats_short['total_pnl_pct'])/2:.2f}%)")
 
         return stats_long, stats_short, trade_log_long, trade_log_short
+    
+    def calculate_advanced_metrics(self, trade_log: List[Dict[str, Any]], initial_balance: float) -> Dict[str, float]:
+        """
+        Рассчитывает продвинутые метрики торговли: максимальную просадку, коэффициент Шарпа, 
+        коэффициент Кальмара и Profit Factor.
+        
+        Args:
+            trade_log: Журнал сделок
+            initial_balance: Начальный баланс
+            
+        Returns:
+            Словарь с продвинутыми метриками
+        """
+        if not trade_log:
+            return {
+                'max_drawdown_pct': 0.0,
+                'sharpe_ratio': 0.0,
+                'calmar_ratio': 0.0,
+                'profit_factor': 0.0
+            }
+
+        # Извлекаем балансы для расчета просадки
+        balances = [initial_balance] + [trade['balance_usd'] for trade in trade_log]
+        
+        # A. Максимальная просадка (Max Draw Down)
+        peak = balances[0]
+        max_dd = 0.0
+        for balance in balances:
+            if balance > peak:
+                peak = balance
+            drawdown = (peak - balance) / peak if peak > 0 else 0
+            if drawdown > max_dd:
+                max_dd = drawdown
+        
+        max_drawdown_pct = max_dd * 100
+
+        # Рассчитываем доходности для Шарпа
+        returns = []
+        for i in range(1, len(balances)):
+            if balances[i-1] > 0:
+                ret = (balances[i] - balances[i-1]) / balances[i-1]
+                returns.append(ret)
+        
+        # B. Коэффициент Шарпа
+        sharpe_ratio = 0.0
+        if len(returns) > 1:
+            mean_return = np.mean(returns)
+            std_return = np.std(returns, ddof=1)
+            if std_return > 0:
+                # Аннуализированный коэффициент Шарпа (предполагаем дневные данные)
+                sharpe_ratio = (mean_return / std_return) * np.sqrt(252)
+
+        # C. Коэффициент Кальмара
+        if len(balances) > 1:
+            total_return = (balances[-1] - balances[0]) / balances[0] if balances[0] > 0 else 0
+            # Аннуализированная доходность (предполагаем, что период в днях)
+            period_days = len(balances)
+            annualized_return = (1 + total_return) ** (365.25 / period_days) - 1 if period_days > 0 else 0
+            calmar_ratio = (annualized_return * 100) / max_drawdown_pct if max_drawdown_pct > 0 else 0
+        else:
+            calmar_ratio = 0.0
+
+        # D. Profit Factor
+        profitable_trades = [trade['net_pnl_usd'] for trade in trade_log if trade.get('net_pnl_usd', 0) > 0]
+        losing_trades = [abs(trade['net_pnl_usd']) for trade in trade_log if trade.get('net_pnl_usd', 0) < 0]
+        
+        if losing_trades:
+            profit_factor = sum(profitable_trades) / sum(losing_trades)
+        else:
+            profit_factor = float('inf') if profitable_trades else 0.0
+
+        return {
+            'max_drawdown_pct': max_drawdown_pct,
+            'sharpe_ratio': sharpe_ratio,
+            'calmar_ratio': calmar_ratio,
+            'profit_factor': profit_factor
+        }
     
 
 if __name__ == "__main__":

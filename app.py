@@ -5,6 +5,7 @@
 import os
 import time
 import json
+import requests
 from datetime import datetime
 from typing import List, Dict, Any, Tuple
 
@@ -40,27 +41,109 @@ def save_api_keys(api_key: str, api_secret: str) -> None:
         json.dump(config, f)
     print("API ключи сохранены в config.json")
 
-def load_api_keys() -> Tuple[str, str]:
-    """Загружает API ключи из файла config.json или переменных окружения"""
+def get_api_keys_source() -> str:
+    """Определяет источник загрузки API ключей используя кэшированную информацию"""
+    if 'api_keys_source' in st.session_state:
+        return st.session_state.api_keys_source
+    
+    # Если кэша нет, используем резервную логику без дополнительных запросов
     try:
-        # Сначала пробуем загрузить из Streamlit secrets (для Streamlit Cloud)
-        if hasattr(st, 'secrets') and 'binance' in st.secrets:
-            return st.secrets["binance"]["api_key"], st.secrets["binance"]["api_secret"]
+        # Проверяем Streamlit secrets
+        try:
+            if hasattr(st, 'secrets') and 'binance' in st.secrets:
+                return "Streamlit Secrets"
+        except Exception:
+            pass
         
-        # Затем из переменных окружения (для Heroku, Railway, Render)
-        env_api_key = os.getenv("BINANCE_API_KEY")
-        env_api_secret = os.getenv("BINANCE_API_SECRET")
-        if env_api_key and env_api_secret:
-            return env_api_key, env_api_secret
+        # Проверяем переменные окружения
+        if os.getenv("BINANCE_API_KEY") and os.getenv("BINANCE_API_SECRET"):
+            return "Переменные окружения"
         
-        # Наконец из файла config.json (для локального использования)
+        # Проверяем локальный файл (без запроса в GitHub для экономии времени)
         if os.path.exists("config.json"):
-            with open("config.json", "r") as f:
-                config = json.load(f)
-            return config.get("api_key", ""), config.get("api_secret", "")
+            return "Локальный config.json"
+        
+        return "Не найдены"
+    except Exception:
+        return "Ошибка определения"
+
+def load_api_keys() -> Tuple[str, str]:
+    """Загружает API ключи из различных источников в порядке приоритета (с кэшированием)"""
+    # Проверяем кэш в session_state
+    if 'cached_api_key' in st.session_state and 'cached_api_secret' in st.session_state:
+        cached_key = st.session_state.cached_api_key
+        cached_secret = st.session_state.cached_api_secret
+        if cached_key and cached_secret:
+            return cached_key, cached_secret
+    
+    try:
+        api_key = ""
+        api_secret = ""
+        source = ""
+        
+        # 1. Сначала пробуем загрузить из Streamlit secrets (для Streamlit Cloud)
+        try:
+            if hasattr(st, 'secrets') and 'binance' in st.secrets:
+                api_key = st.secrets["binance"]["api_key"]
+                api_secret = st.secrets["binance"]["api_secret"]
+                source = "Streamlit Secrets"
+        except Exception:
+            pass  # Игнорируем ошибки со secrets
+        
+        # 2. Затем из переменных окружения (для Heroku, Railway, Render)
+        if not api_key or not api_secret:
+            env_api_key = os.getenv("BINANCE_API_KEY")
+            env_api_secret = os.getenv("BINANCE_API_SECRET")
+            if env_api_key and env_api_secret:
+                api_key = env_api_key
+                api_secret = env_api_secret
+                source = "переменных окружения"
+        
+        # 3. Для локального запуска - из GitHub репозитория
+        if not api_key or not api_secret:
+            try:
+                github_url = "https://raw.githubusercontent.com/demetrius2017/binance_correlation_for_grids_trading/main/config.json"
+                response = requests.get(github_url, timeout=10)
+                if response.status_code == 200:
+                    github_config = response.json()
+                    github_api_key = github_config.get("api_key", "")
+                    github_api_secret = github_config.get("api_secret", "")
+                    if github_api_key and github_api_secret:
+                        api_key = github_api_key
+                        api_secret = github_api_secret
+                        source = "GitHub репозитория"
+            except Exception as github_error:
+                pass  # Игнорируем ошибки с GitHub
+        
+        # 4. Наконец из локального файла config.json (резервный вариант)
+        if not api_key or not api_secret:
+            if os.path.exists("config.json"):
+                with open("config.json", "r") as f:
+                    config = json.load(f)
+                local_api_key = config.get("api_key", "")
+                local_api_secret = config.get("api_secret", "")
+                if local_api_key and local_api_secret:
+                    api_key = local_api_key
+                    api_secret = local_api_secret
+                    source = "локального config.json"
+        
+        # Кэшируем результат и выводим сообщение только при первой загрузке
+        if api_key and api_secret:
+            # Проверяем, изменились ли ключи
+            if ('cached_api_key' not in st.session_state or 
+                st.session_state.cached_api_key != api_key or
+                st.session_state.cached_api_secret != api_secret):
+                
+                st.session_state.cached_api_key = api_key
+                st.session_state.cached_api_secret = api_secret
+                st.session_state.api_keys_source = source
+                print(f"✅ API ключи загружены из {source}")
+            
+            return api_key, api_secret
+        
         return "", ""
     except Exception as e:
-        print(f"Ошибка при загрузке API ключей: {e}")
+        print(f"❌ Ошибка при загрузке API ключей: {e}")
         return "", ""
 
 
@@ -77,6 +160,23 @@ if 'api_keys_saved' not in st.session_state:
 
 if 'filtered_pairs' not in st.session_state:
     st.session_state.filtered_pairs = []
+
+# Результаты Grid Trading
+if 'grid_simulation_results' not in st.session_state:
+    st.session_state.grid_simulation_results = None
+
+if 'grid_simulation_params' not in st.session_state:
+    st.session_state.grid_simulation_params = None
+
+# Результаты оптимизации
+if 'optimization_results' not in st.session_state:
+    st.session_state.optimization_results = None
+
+if 'optimization_params' not in st.session_state:
+    st.session_state.optimization_params = None
+
+if 'optimization_best_result' not in st.session_state:
+    st.session_state.optimization_best_result = None
 
 # Заголовок приложения
 st.title("Анализатор торговых пар Binance")
@@ -117,11 +217,16 @@ with st.sidebar:
         else:
             st.error("Введите оба ключа для сохранения")
     
-    # Показываем статус сохранения ключей
+    # Показываем статус сохранения ключей с источником
+    keys_source = get_api_keys_source()
     if st.session_state.api_keys_saved or (api_key and api_secret):
-        st.success("✅ API ключи настроены")
+        st.success(f"✅ API ключи настроены")
+        if keys_source != "Не найдены":
+            st.info(f"📡 Источник: {keys_source}")
     elif not api_key and not api_secret:
         st.warning("⚠️ Введите API ключи для работы с Binance")
+        if keys_source != "Не найдены":
+            st.info(f"🔍 Обнаружены ключи в: {keys_source}")
     else:
         st.info("💡 Нажмите 'Сохранить ключи' после ввода")
     
@@ -522,10 +627,10 @@ with tab3:
         stop_loss_pct = st.slider(
             "Стоп-лосс (%)",
             min_value=0.0,
-            max_value=20.0,
-            value=5.0,
-            step=0.5,
-            help="Процент убытка от начального капитала для закрытия всех позиций. 0 - отключить."
+            max_value=50.0,
+            value=25.0,
+            step=2.5,
+            help="Процент просадки для остановки торговли. 0 - отключить. Ускоряет тестирование плохих параметров."
         )
     with col_c:
         timeframe = st.selectbox(
@@ -550,100 +655,224 @@ with tab3:
             help=f"Доступно {len(current_pairs_for_grid)} отфильтрованных пар"
         )
 
-        if st.button("🚀 Запустить симуляцию для выбранной пары", type="primary"):
-            if not saved_api_key or not saved_api_secret:
-                st.error("Пожалуйста, введите и сохраните API ключи в боковой панели.")
-            elif not selected_pair_for_grid:
-                st.warning("Пожалуйста, выберите пару для симуляции.")
-            else:
-                try:
-                    # Инициализация инструментов
-                    with st.spinner("Подключение к Binance..."):
-                        collector = BinanceDataCollector(saved_api_key, saved_api_secret)
-                        grid_analyzer = GridAnalyzer(collector)
-                    st.success("Подключение успешно!")
-                    
-                    # Получение исторических данных
-                    with st.spinner(f"Загрузка исторических данных для {selected_pair_for_grid}..."):
-                        timeframe_in_minutes = {'15m': 15, '1h': 60, '4h': 240, '1d': 1440}
-                        total_minutes = simulation_days * 24 * 60
-                        limit = int(total_minutes / timeframe_in_minutes[timeframe])
-                        
-                        df_for_simulation = collector.get_historical_data(selected_pair_for_grid, timeframe, limit)
-                    
-                    if df_for_simulation.empty:
-                        st.error("Не удалось загрузить данные для симуляции.")
-                    else:
-                        # Запуск симуляции
-                        with st.spinner(f"Запуск симуляции для {selected_pair_for_grid}..."):
-                            stats_long, stats_short, log_long_df, log_short_df = grid_analyzer.estimate_dual_grid_by_candles_realistic(
-                                df=df_for_simulation,
-                                initial_balance_long=initial_balance,
-                                initial_balance_short=initial_balance,
-                                grid_range_pct=grid_range_pct,
-                                grid_step_pct=grid_step_pct,
-                                order_size_usd_long=0,  # Автоматический расчет
-                                order_size_usd_short=0, # Автоматический расчет
-                                commission_pct=TAKER_COMMISSION_RATE * 100,
-                                stop_loss_pct=stop_loss_pct if stop_loss_pct > 0 else None,
-                                debug=False
-                            )
+        # Отображение сохраненных результатов Grid Trading
+        if (st.session_state.grid_simulation_results is not None and 
+            st.session_state.grid_simulation_params is not None):
+            st.markdown("---")
+            st.subheader("📈 Последние результаты симуляции")
+            
+            saved_results = st.session_state.grid_simulation_results
+            saved_params = st.session_state.grid_simulation_params
+            
+            # Информация о последнем тесте
+            st.info(f"""
+            **Последний тест**: {saved_results['pair']} 
+            **Время**: {saved_results['timestamp']}
+            **Параметры**: Диапазон {saved_params['grid_range_pct']}%, Шаг {saved_params['grid_step_pct']}%, Стоп-лосс {saved_params['stop_loss_pct']}%
+            """)
+            
+            # Краткие результаты
+            stats_long = saved_results['stats_long']
+            stats_short = saved_results['stats_short']
+            total_pnl = stats_long['total_pnl'] + stats_short['total_pnl']
+            total_initial_balance = saved_params['initial_balance'] * 2
+            total_pnl_pct = (total_pnl / total_initial_balance) * 100 if total_initial_balance > 0 else 0
+            total_trades = stats_long['trades_count'] + stats_short['trades_count']
+            
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("PnL", f"${total_pnl:.2f}", f"{total_pnl_pct:.2f}%")
+            with col2:
+                st.metric("Сделок", total_trades)
+            with col3:
+                avg_dd = (stats_long.get('max_drawdown_pct', 0) + stats_short.get('max_drawdown_pct', 0)) / 2
+                st.metric("Макс. DD", f"{avg_dd:.2f}%")
+            with col4:
+                total_stop_loss_triggers = stats_long.get('stop_loss_triggers', 0) + stats_short.get('stop_loss_triggers', 0)
+                st.metric("Стоп-лоссов", total_stop_loss_triggers)
+            
+            # Развернутые результаты в expander
+            with st.expander("🔍 Детальные результаты"):
+                # Расчет всех метрик
+                total_commission = stats_long['total_commission'] + stats_short['total_commission']
+                avg_sharpe = (stats_long.get('sharpe_ratio', 0) + stats_short.get('sharpe_ratio', 0)) / 2
+                avg_pf = (stats_long.get('profit_factor', 0) + stats_short.get('profit_factor', 0)) / 2
+                
+                # Детальная статистика
+                results_data = {
+                    "Метрика": ["Баланс Long", "PnL Long ($)", "PnL Long (%)", "Сделок Long", "Комиссии Long ($)", "Стоп-лоссов Long",
+                                "Баланс Short", "PnL Short ($)", "PnL Short (%)", "Сделок Short", "Комиссии Short ($)", "Стоп-лоссов Short"],
+                    "Значение": [
+                        f"${stats_long['final_balance']:.2f}", f"${stats_long['total_pnl']:.2f}", f"{stats_long['total_pnl_pct']:.2f}%", str(stats_long['trades_count']), f"${stats_long['total_commission']:.2f}", str(stats_long.get('stop_loss_triggers', 0)),
+                        f"${stats_short['final_balance']:.2f}", f"${stats_short['total_pnl']:.2f}", f"{stats_short['total_pnl_pct']:.2f}%", str(stats_short['trades_count']), f"${stats_short['total_commission']:.2f}", str(stats_short.get('stop_loss_triggers', 0))
+                    ]
+                }
+                results_df = pd.DataFrame(results_data)
+                results_df['Значение'] = results_df['Значение'].astype(str)
+                st.dataframe(results_df, use_container_width=True)
+                
+                # Логи сделок
+                if saved_results['log_long_df']:
+                    st.subheader("Лог сделок Long")
+                    df_long = pd.DataFrame(saved_results['log_long_df'])
+                    st.dataframe(df_long, use_container_width=True)
+                
+                if saved_results['log_short_df']:
+                    st.subheader("Лог сделок Short")
+                    df_short = pd.DataFrame(saved_results['log_short_df'])
+                    st.dataframe(df_short, use_container_width=True)
+            
+            st.markdown("---")
 
-                        st.success(f"✅ Симуляция для {selected_pair_for_grid} за {simulation_days} дней завершена!")
+        # Кнопки управления
+        col_btn1, col_btn2 = st.columns(2)
+        
+        with col_btn1:
+            if st.button("🚀 Запустить симуляцию для выбранной пары", type="primary"):
+                if not saved_api_key or not saved_api_secret:
+                    st.error("Пожалуйста, введите и сохраните API ключи в боковой панели.")
+                elif not selected_pair_for_grid:
+                    st.warning("Пожалуйста, выберите пару для симуляции.")
+                else:
+                    try:
+                        # Инициализация инструментов
+                        with st.spinner("Подключение к Binance..."):
+                            collector = BinanceDataCollector(saved_api_key, saved_api_secret)
+                            grid_analyzer = GridAnalyzer(collector)
+                        st.success("Подключение успешно!")
                         
-                        # Отображение результатов
-                        st.subheader("📊 Результаты симуляции")
+                        # Получение исторических данных
+                        with st.spinner(f"Загрузка исторических данных для {selected_pair_for_grid}..."):
+                            timeframe_in_minutes = {'15m': 15, '1h': 60, '4h': 240, '1d': 1440}
+                            total_minutes = simulation_days * 24 * 60
+                            limit = int(total_minutes / timeframe_in_minutes[timeframe])
+                            
+                            df_for_simulation = collector.get_historical_data(selected_pair_for_grid, timeframe, limit)
                         
-                        # Расчет комбинированных результатов
-                        total_pnl = stats_long['total_pnl'] + stats_short['total_pnl']
-                        total_initial_balance = initial_balance * 2
-                        total_pnl_pct = (total_pnl / total_initial_balance) * 100 if total_initial_balance > 0 else 0
-                        total_trades = stats_long['trades_count'] + stats_short['trades_count']
-                        total_commission = stats_long['total_commission'] + stats_short['total_commission']
-                        
-                        col_result1, col_result2, col_result3 = st.columns(3)
-                        
-                        with col_result1:
-                            st.metric("Общий PnL", f"${total_pnl:.2f}", f"{total_pnl_pct:.2f}%")
-                        with col_result2:
-                            st.metric("Всего сделок", total_trades)
-                        with col_result3:
-                            st.metric("Всего комиссий", f"${total_commission:.2f}")
+                        if df_for_simulation.empty:
+                            st.error("Не удалось загрузить данные для симуляции.")
+                        else:
+                            # Запуск симуляции
+                            with st.spinner(f"Запуск симуляции для {selected_pair_for_grid}..."):
+                                stats_long, stats_short, log_long_df, log_short_df = grid_analyzer.estimate_dual_grid_by_candles_realistic(
+                                    df=df_for_simulation,
+                                    initial_balance_long=initial_balance,
+                                    initial_balance_short=initial_balance,
+                                    grid_range_pct=grid_range_pct,
+                                    grid_step_pct=grid_step_pct,
+                                    order_size_usd_long=0,  # Автоматический расчет
+                                    order_size_usd_short=0, # Автоматический расчет
+                                    commission_pct=TAKER_COMMISSION_RATE * 100,
+                                    stop_loss_pct=stop_loss_pct if stop_loss_pct > 0 else None,  # Правильный стоп-лосс
+                                    stop_loss_strategy='reset_grid',  # Перестраиваем сетку при стоп-лоссе
+                                    max_drawdown_pct=None,  # DD только для информации
+                                    debug=False
+                                )
 
-                        st.subheader("📋 Детальная статистика")
-                        
-                        results_data = {
-                            "Метрика": ["Баланс Long", "PnL Long ($)", "PnL Long (%)", "Сделок Long", "Комиссии Long ($)",
-                                        "Баланс Short", "PnL Short ($)", "PnL Short (%)", "Сделок Short", "Комиссии Short ($)"],
-                            "Значение": [
-                                f"${stats_long['final_balance']:.2f}", f"${stats_long['total_pnl']:.2f}", f"{stats_long['total_pnl_pct']:.2f}%", str(stats_long['trades_count']), f"${stats_long['total_commission']:.2f}",
-                                f"${stats_short['final_balance']:.2f}", f"${stats_short['total_pnl']:.2f}", f"{stats_short['total_pnl_pct']:.2f}%", str(stats_short['trades_count']), f"${stats_short['total_commission']:.2f}"
-                            ]
-                        }
-                        # Приводим все значения к строкам для избежания ошибки Arrow
-                        results_df = pd.DataFrame(results_data)
-                        results_df['Значение'] = results_df['Значение'].astype(str)
-                        st.dataframe(results_df, use_container_width=True)
+                            st.success(f"✅ Симуляция для {selected_pair_for_grid} за {simulation_days} дней завершена!")
+                            
+                            # Сохранение результатов в session_state
+                            st.session_state.grid_simulation_results = {
+                                'pair': selected_pair_for_grid,
+                                'stats_long': stats_long,
+                                'stats_short': stats_short,
+                                'log_long_df': log_long_df,
+                                'log_short_df': log_short_df,
+                                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            }
+                            
+                            st.session_state.grid_simulation_params = {
+                                'grid_range_pct': grid_range_pct,
+                                'grid_step_pct': grid_step_pct,
+                                'initial_balance': initial_balance,
+                                'simulation_days': simulation_days,
+                                'stop_loss_pct': stop_loss_pct,
+                                'timeframe': timeframe
+                            }
+                            
+                            # Отображение результатов
+                            st.subheader("📊 Результаты симуляции")
+                            
+                            # Расчет комбинированных результатов
+                            total_pnl = stats_long['total_pnl'] + stats_short['total_pnl']
+                            total_initial_balance = initial_balance * 2
+                            total_pnl_pct = (total_pnl / total_initial_balance) * 100 if total_initial_balance > 0 else 0
+                            total_trades = stats_long['trades_count'] + stats_short['trades_count']
+                            total_commission = stats_long['total_commission'] + stats_short['total_commission']
+                            
+                            # Продвинутые метрики
+                            avg_dd = (stats_long.get('max_drawdown_pct', 0) + stats_short.get('max_drawdown_pct', 0)) / 2
+                            avg_sharpe = (stats_long.get('sharpe_ratio', 0) + stats_short.get('sharpe_ratio', 0)) / 2
+                            avg_pf = (stats_long.get('profit_factor', 0) + stats_short.get('profit_factor', 0)) / 2
+                            
+                            col_result1, col_result2, col_result3, col_result4, col_result5 = st.columns(5)
+                            
+                            with col_result1:
+                                st.metric("Общий PnL", f"${total_pnl:.2f}", f"{total_pnl_pct:.2f}%")
+                            with col_result2:
+                                st.metric("Всего сделок", total_trades)
+                            with col_result3:
+                                st.metric("Макс. просадка", f"{avg_dd:.2f}%")
+                            with col_result4:
+                                st.metric("Коэфф. Шарпа", f"{avg_sharpe:.2f}")
+                            with col_result5:
+                                total_stop_loss_triggers = stats_long.get('stop_loss_triggers', 0) + stats_short.get('stop_loss_triggers', 0)
+                                st.metric("Срабатываний стоп-лосса", total_stop_loss_triggers)
+                            
+                            # Дополнительная информация о стоп-лоссах
+                            if total_stop_loss_triggers > 0:
+                                st.warning(f"⚠️ Сетка перестраивалась {total_stop_loss_triggers} раз(а) при срабатывании стоп-лосса {stop_loss_pct}%")
+                            
+                            # Карточка с краткой сводкой
+                            st.info(f"""
+                            **📋 Краткая сводка:**
+                            • **PnL**: ${total_pnl:.2f} ({total_pnl_pct:.2f}%) 
+                            • **Сделок**: {total_trades} | **Комиссии**: ${total_commission:.2f}
+                            • **DD**: {avg_dd:.2f}% | **Sharpe**: {avg_sharpe:.2f} | **PF**: {avg_pf:.1f}
+                            • **Стоп-лоссов**: {total_stop_loss_triggers} ({stats_long.get('stop_loss_triggers', 0)} Long + {stats_short.get('stop_loss_triggers', 0)} Short)
+                            """)
 
-                        # Отображение логов сделок
-                        with st.expander("📋 Показать логи сделок"):
-                            st.subheader("Лог сделок Long")
-                            if log_long_df: # Проверяем, что список не пустой
-                                df_long = pd.DataFrame(log_long_df)
-                                st.dataframe(df_long, use_container_width=True)
-                            else:
-                                st.info("Сделок по Long не было.")
-                                
-                            st.subheader("Лог сделок Short")
-                            if log_short_df: # Проверяем, что список не пустой
-                                df_short = pd.DataFrame(log_short_df)
-                                st.dataframe(df_short, use_container_width=True)
-                            else:
-                                st.info("Сделок по Short не было.")
+                            st.subheader("📋 Детальная статистика")
+                            
+                            results_data = {
+                                "Метрика": ["Баланс Long", "PnL Long ($)", "PnL Long (%)", "Сделок Long", "Комиссии Long ($)", "Стоп-лоссов Long",
+                                            "Баланс Short", "PnL Short ($)", "PnL Short (%)", "Сделок Short", "Комиссии Short ($)", "Стоп-лоссов Short"],
+                                "Значение": [
+                                    f"${stats_long['final_balance']:.2f}", f"${stats_long['total_pnl']:.2f}", f"{stats_long['total_pnl_pct']:.2f}%", str(stats_long['trades_count']), f"${stats_long['total_commission']:.2f}", str(stats_long.get('stop_loss_triggers', 0)),
+                                    f"${stats_short['final_balance']:.2f}", f"${stats_short['total_pnl']:.2f}", f"{stats_short['total_pnl_pct']:.2f}%", str(stats_short['trades_count']), f"${stats_short['total_commission']:.2f}", str(stats_short.get('stop_loss_triggers', 0))
+                                ]
+                            }
+                            # Приводим все значения к строкам для избежания ошибки Arrow
+                            results_df = pd.DataFrame(results_data)
+                            results_df['Значение'] = results_df['Значение'].astype(str)
+                            st.dataframe(results_df, use_container_width=True)
 
-                except Exception as e:
-                    st.error(f"Произошла ошибка во время симуляции: {e}")
-                    st.exception(e)
+                            # Отображение логов сделок
+                            with st.expander("📋 Показать логи сделок"):
+                                st.subheader("Лог сделок Long")
+                                if log_long_df: # Проверяем, что список не пустой
+                                    df_long = pd.DataFrame(log_long_df)
+                                    st.dataframe(df_long, use_container_width=True)
+                                else:
+                                    st.info("Сделок по Long не было.")
+                                    
+                                st.subheader("Лог сделок Short")
+                                if log_short_df: # Проверяем, что список не пустой
+                                    df_short = pd.DataFrame(log_short_df)
+                                    st.dataframe(df_short, use_container_width=True)
+                                else:
+                                    st.info("Сделок по Short не было.")
+
+                    except Exception as e:
+                        st.error(f"Произошла ошибка во время симуляции: {e}")
+                        st.exception(e)
+        
+        with col_btn2:
+            if st.session_state.grid_simulation_results is not None:
+                if st.button("🗑️ Очистить результаты", key="clear_grid_results"):
+                    st.session_state.grid_simulation_results = None
+                    st.session_state.grid_simulation_params = None
+                    st.rerun()
     else:
         st.info("Загрузите список торговых пар в вкладке 'Настройки'")
 
@@ -745,164 +974,334 @@ with tab4:
         with col_b:
             points_per_iteration = st.slider("Точек за итерацию", 20, 100, 50)
     
+    # Настройки риск-менеджмента
+    st.subheader("🛡️ Настройки тестирования")
+    col_risk1, col_risk2 = st.columns(2)
+    
+    with col_risk1:
+        forward_test_pct = st.slider(
+            "Форвард тест (%)",
+            min_value=0.2,
+            max_value=0.5,
+            value=0.3,
+            step=0.05,
+            help="Процент данных для форвард теста (проверки на новых данных)"
+        )
+    
+    with col_risk2:
+        st.info("""
+        **Только стоп-лосс используется как ограничитель**
+        
+        Drawdown показывается информативно в результатах для оценки качества стратегии.
+        """)
+    
     st.markdown("---")
     
-    # Кнопка запуска оптимизации
-    if st.button("🚀 Запустить оптимизацию", type="primary", key="start_optimization"):
-        # Исправляем проблему с API ключами - используем загруженные ключи
-        if not api_key or not api_secret:
-            st.error("Пожалуйста, введите API ключи в боковой панели.")
-        elif not opt_pair:
-            st.error("Пожалуйста, сначала загрузите пары в вкладке 'Настройки'.")
-        else:
-            try:
-                # Прогресс бар и контейнеры для вывода
-                progress_bar = st.progress(0)
-                status_text = st.empty()
+    # Отображение сохраненных результатов оптимизации
+    if (st.session_state.optimization_results is not None and 
+        st.session_state.optimization_params is not None):
+        st.subheader("🎯 Последние результаты оптимизации")
+        
+        opt_params = st.session_state.optimization_params
+        opt_results = st.session_state.optimization_results
+        best_result = st.session_state.optimization_best_result
+        
+        # Информация о последней оптимизации
+        st.info(f"""
+        **Пара**: {opt_params['pair']} | **Метод**: {opt_params['method']}  
+        **Время**: {opt_params['timestamp']} | **Длительность**: {opt_params['duration_seconds']:.1f}с
+        **Найдено вариантов**: {len(opt_results)} | **Данные**: {opt_params['days']} дней, {opt_params['timeframe']}
+        """)
+        
+        if best_result:
+            # Лучший результат
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Лучший скор", f"{best_result.combined_score:.2f}%")
+            with col2:
+                st.metric("Бэктест / Форвард", f"{best_result.backtest_score:.2f}% / {best_result.forward_score:.2f}%")
+            with col3:
+                st.metric("Drawdown", f"{best_result.max_drawdown_pct:.2f}%")
+            with col4:
+                st.metric("Sharpe", f"{best_result.sharpe_ratio:.2f}")
+            
+            # Параметры лучшего результата
+            st.success(f"""
+            **🏆 Лучшие параметры:**
+            • **Диапазон сетки**: {best_result.params.grid_range_pct:.1f}%
+            • **Шаг сетки**: {best_result.params.grid_step_pct:.2f}%  
+            • **Стоп-лосс**: {best_result.params.stop_loss_pct:.1f}%
+            • **Сделок**: {best_result.trades_count} | **PF**: {best_result.profit_factor:.1f}
+            """)
+            
+            # Топ-5 результатов в expander
+            with st.expander("🔍 Топ-5 результатов"):
+                top_5 = opt_results[:5]
+                results_data = []
                 
-                # Инициализация с правильными API ключами
-                status_text.text("Инициализация...")
-                collector = BinanceDataCollector(api_key, api_secret)  # Используем ключи из sidebar
-                grid_analyzer = GridAnalyzer(collector)
-                optimizer = GridOptimizer(grid_analyzer, TAKER_COMMISSION_RATE)
-                
-                # Загрузка данных
-                status_text.text(f"Загрузка данных для {opt_pair}...")
-                progress_bar.progress(10)
-                
-                timeframe_in_minutes = {'15m': 15, '1h': 60, '4h': 240, '1d': 1440}
-                total_minutes = opt_days * 24 * 60
-                limit = int(total_minutes / timeframe_in_minutes[opt_timeframe])
-                
-                df_opt = collector.get_historical_data(opt_pair, opt_timeframe, limit)
-                
-                if df_opt.empty:
-                    st.error("Не удалось загрузить данные для оптимизации.")
-                else:
-                    progress_bar.progress(20)
+                for i, result in enumerate(top_5):
+                    stability = abs(result.backtest_score - result.forward_score)
+                    dd_pct = result.max_drawdown_pct
+                    sharpe = result.sharpe_ratio
                     
-                    # Функция для обновления прогресса
-                    def progress_callback(message):
-                        status_text.text(message)
-                    
-                    start_time = time.time()
-                    
-                    # Запуск оптимизации в зависимости от выбранного метода
-                    if opt_method == "Генетический алгоритм":
-                        status_text.text("Запуск генетического алгоритма...")
-                        progress_bar.progress(30)
-                        
-                        results = optimizer.optimize_genetic(
-                            df=df_opt,
-                            initial_balance=opt_balance,
-                            population_size=population_size,
-                            generations=generations,
-                            forward_test_pct=0.3,
-                            max_workers=max_workers,
-                            progress_callback=progress_callback
-                        )
+                    if dd_pct < 10 and sharpe > 1.0 and stability < 5:
+                        quality_indicator = "🟢"
+                    elif dd_pct < 20 and sharpe > 0.5 and stability < 10:
+                        quality_indicator = "🟡"
                     else:
-                        status_text.text("Запуск адаптивного поиска...")
-                        progress_bar.progress(30)
+                        quality_indicator = "🔴"
+                    
+                    results_data.append({
+                        'Ранг': f"{quality_indicator} {i + 1}",
+                        'Скор (%)': f"{result.combined_score:.2f}",
+                        'Бэктест (%)': f"{result.backtest_score:.2f}",
+                        'Форвард (%)': f"{result.forward_score:.2f}",
+                        'DD (%)': f"{result.max_drawdown_pct:.2f}",
+                        'Sharpe': f"{result.sharpe_ratio:.2f}",
+                        'Диапазон (%)': f"{result.params.grid_range_pct:.1f}",
+                        'Шаг (%)': f"{result.params.grid_step_pct:.2f}",
+                        'Стоп-лосс (%)': f"{result.params.stop_loss_pct:.1f}"
+                    })
+                
+                results_df = pd.DataFrame(results_data)
+                st.dataframe(results_df, use_container_width=True)
+        
+        st.markdown("---")
+    
+    # Кнопки управления оптимизацией
+    col_opt1, col_opt2 = st.columns(2)
+    
+    with col_opt1:
+        if st.button("🚀 Запустить оптимизацию", type="primary", key="start_optimization"):
+            # Исправляем проблему с API ключами - используем загруженные ключи
+            if not api_key or not api_secret:
+                st.error("Пожалуйста, введите API ключи в боковой панели.")
+            elif not opt_pair:
+                st.error("Пожалуйста, сначала загрузите пары в вкладке 'Настройки'.")
+            else:
+                try:
+                    # Прогресс бар и контейнеры для вывода
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    # Инициализация с правильными API ключами
+                    status_text.text("Инициализация...")
+                    collector = BinanceDataCollector(api_key, api_secret)  # Используем ключи из sidebar
+                    grid_analyzer = GridAnalyzer(collector)
+                    optimizer = GridOptimizer(grid_analyzer, TAKER_COMMISSION_RATE)
+                    
+                    # Загрузка данных
+                    status_text.text(f"Загрузка данных для {opt_pair}...")
+                    progress_bar.progress(10)
+                    
+                    timeframe_in_minutes = {'15m': 15, '1h': 60, '4h': 240, '1d': 1440}
+                    total_minutes = opt_days * 24 * 60
+                    limit = int(total_minutes / timeframe_in_minutes[opt_timeframe])
+                
+                    df_opt = collector.get_historical_data(opt_pair, opt_timeframe, limit)
+                    
+                    if df_opt.empty:
+                        st.error("Не удалось загрузить данные для оптимизации.")
+                        # Очистка предыдущих результатов при ошибке
+                        st.session_state.optimization_results = None
+                        st.session_state.optimization_params = None
+                        st.session_state.optimization_best_result = None
+                    else:
+                        progress_bar.progress(20)
                         
-                        results = optimizer.grid_search_adaptive(
-                            df=df_opt,
-                            initial_balance=opt_balance,
-                            forward_test_pct=0.3,
-                            iterations=iterations,
-                            points_per_iteration=points_per_iteration,
-                            progress_callback=progress_callback
-                        )
-                    
-                    end_time = time.time()
-                    progress_bar.progress(100)
-                    status_text.text(f"✅ Оптимизация завершена за {end_time - start_time:.1f} секунд")
-                    
-                    # Отображение результатов
-                    st.success(f"Найдено {len(results)} вариантов параметров!")
-                    
-                    # Топ-10 результатов
-                    st.subheader("🏆 Топ-10 лучших параметров")
-                    
-                    top_results = results[:10]
-                    results_data = []
-                    
-                    for i, result in enumerate(top_results):
-                        results_data.append({
-                            'Ранг': i + 1,
-                            'Общий скор (%)': f"{result.combined_score:.2f}",
-                            'Бэктест (%)': f"{result.backtest_score:.2f}",
-                            'Форвард (%)': f"{result.forward_score:.2f}",
-                            'Диапазон сетки (%)': f"{result.params.grid_range_pct:.1f}",
-                            'Шаг сетки (%)': f"{result.params.grid_step_pct:.2f}",
-                            'Стоп-лосс (%)': f"{result.params.stop_loss_pct:.1f}",
-                            'Сделок': result.trades_count,
-                            'Просадка (%)': f"{result.drawdown:.2f}"
-                        })
-                    
-                    results_df = pd.DataFrame(results_data)
-                    st.dataframe(results_df, use_container_width=True)
-                    
-                    # Детальная информация о лучшем результате
-                    if results:
-                        best_result = results[0]
-                        st.subheader("🥇 Лучший результат")
+                        # Функция для обновления прогресса (определяем заранее)
+                        def progress_callback(message):
+                            status_text.text(message)
                         
-                        col_info1, col_info2, col_info3 = st.columns(3)
+                        # Засекаем время начала (определяем заранее)
+                        start_time = time.time()
                         
-                        with col_info1:
-                            st.metric("Комбинированный скор", f"{best_result.combined_score:.2f}%")
-                            st.metric("Диапазон сетки", f"{best_result.params.grid_range_pct:.1f}%")
-                        
-                        with col_info2:
-                            st.metric("Бэктест vs Форвард", 
-                                    f"{best_result.backtest_score:.2f}% vs {best_result.forward_score:.2f}%")
-                            st.metric("Шаг сетки", f"{best_result.params.grid_step_pct:.2f}%")
-                        
-                        with col_info3:
-                            st.metric("Всего сделок", best_result.trades_count)
-                            st.metric("Стоп-лосс", f"{best_result.params.stop_loss_pct:.1f}%")
-                        
-                        # Анализ стабильности
-                        stability = abs(best_result.backtest_score - best_result.forward_score)
-                        if stability < 5:
-                            st.success(f"🟢 Высокая стабильность (разность {stability:.2f}%)")
-                        elif stability < 10:
-                            st.warning(f"🟡 Средняя стабильность (разность {stability:.2f}%)")
+                        # Запуск оптимизации в зависимости от выбранного метода
+                        if opt_method == "Генетический алгоритм":
+                            status_text.text("Запуск генетического алгоритма...")
+                            progress_bar.progress(30)
+                            
+                            results = optimizer.optimize_genetic(
+                                df=df_opt,
+                                initial_balance=opt_balance,
+                                population_size=population_size,
+                                generations=generations,
+                                forward_test_pct=forward_test_pct,
+                                max_workers=max_workers,
+                                progress_callback=progress_callback
+                            )
                         else:
-                            st.error(f"🔴 Низкая стабильность (разность {stability:.2f}%)")
+                            status_text.text("Запуск адаптивного поиска...")
+                            progress_bar.progress(30)
+                            
+                            results = optimizer.grid_search_adaptive(
+                                df=df_opt,
+                                initial_balance=opt_balance,
+                                forward_test_pct=forward_test_pct,
+                                iterations=iterations,
+                                points_per_iteration=points_per_iteration,
+                                progress_callback=progress_callback
+                            )
                         
-                        # Кнопка для тестирования лучших параметров
-                        st.subheader("🧪 Тестирование лучших параметров")
+                        end_time = time.time()
+                        progress_bar.progress(100)
+                        status_text.text(f"✅ Оптимизация завершена за {end_time - start_time:.1f} секунд")
                         
-                        if st.button("🔬 Протестировать лучшие параметры на полных данных"):
-                            with st.spinner("Тестирование..."):
-                                test_stats_long, test_stats_short, test_log_long, test_log_short = grid_analyzer.estimate_dual_grid_by_candles_realistic(
-                                    df=df_opt,
-                                    initial_balance_long=opt_balance,
-                                    initial_balance_short=opt_balance,
-                                    grid_range_pct=best_result.params.grid_range_pct,
-                                    grid_step_pct=best_result.params.grid_step_pct,
-                                    order_size_usd_long=0,
-                                    order_size_usd_short=0,
-                                    commission_pct=TAKER_COMMISSION_RATE * 100,
-                                    stop_loss_pct=best_result.params.stop_loss_pct if best_result.params.stop_loss_pct > 0 else None,
-                                    debug=False
-                                )
-                                
-                                total_pnl = test_stats_long['total_pnl'] + test_stats_short['total_pnl']
-                                total_pnl_pct = (total_pnl / (opt_balance * 2)) * 100
-                                
-                                st.success("✅ Тест на полных данных завершен!")
-                                st.metric("Результат на полных данных", f"{total_pnl_pct:.2f}%", f"${total_pnl:.2f}")
+                        # Сохранение результатов оптимизации в session_state
+                        st.session_state.optimization_results = results
+                        st.session_state.optimization_params = {
+                            'pair': opt_pair,
+                            'balance': opt_balance,
+                            'timeframe': opt_timeframe,
+                            'days': opt_days,
+                            'method': opt_method,
+                            'forward_test_pct': forward_test_pct,
+                            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            'duration_seconds': end_time - start_time
+                        }
+                        if results:
+                            st.session_state.optimization_best_result = results[0]
+                        
+                        # Отображение результатов
+                        st.success(f"Найдено {len(results)} вариантов параметров!")
+                        
+                        # Топ-10 результатов
+                        st.subheader("🏆 Топ-10 лучших параметров")
+                        
+                        top_results = results[:10]
+                        results_data = []
+                        
+                        for i, result in enumerate(top_results):
+                            # Цветовая индикация качества
+                            stability = abs(result.backtest_score - result.forward_score)
+                            dd_pct = result.max_drawdown_pct
+                            sharpe = result.sharpe_ratio
+                            
+                            if dd_pct < 10 and sharpe > 1.0 and stability < 5:
+                                quality_indicator = "🟢"
+                            elif dd_pct < 20 and sharpe > 0.5 and stability < 10:
+                                quality_indicator = "🟡"
+                            else:
+                                quality_indicator = "🔴"
+                            
+                            results_data.append({
+                                'Ранг': f"{quality_indicator} {i + 1}",
+                                'Общий скор (%)': f"{result.combined_score:.2f}",
+                                'Бэктест (%)': f"{result.backtest_score:.2f}",
+                                'Форвард (%)': f"{result.forward_score:.2f}",
+                                'DD (%)': f"{result.max_drawdown_pct:.2f}",
+                                'Sharpe': f"{result.sharpe_ratio:.2f}",
+                                'PF': f"{result.profit_factor:.1f}",
+                                'Диапазон сетки (%)': f"{result.params.grid_range_pct:.1f}",
+                                'Шаг сетки (%)': f"{result.params.grid_step_pct:.2f}",
+                                'Стоп-лосс (%)': f"{result.params.stop_loss_pct:.1f}",
+                                'Сделок': result.trades_count
+                            })
+                        
+                        results_df = pd.DataFrame(results_data)
+                        st.dataframe(results_df, use_container_width=True)
+                        
+                        # Пояснения к новым метрикам
+                        with st.expander("📚 Пояснения к метрикам"):
+                            st.markdown("""
+                            **Новые продвинутые метрики:**
+                            - **DD (%)** - максимальная просадка (Draw Down) 
+                            - **Sharpe** - коэффициент Шарпа (оценка эффективности с учетом риска)
+                            - **PF** - Profit Factor (отношение суммы прибыли к сумме убытков)
+                            
+                            **Цветовая индикация качества:**
+                            - 🟢 **Зеленый**: Отличные показатели (DD<10%, Sharpe>1.0, стабильность<5%)
+                            - 🟡 **Желтый**: Хорошие показатели (DD<20%, Sharpe>0.5, стабильность<10%)  
+                            - 🔴 **Красный**: Плохие показатели (DD>20%, Sharpe<0.5, стабильность>10%)
+                            """)
+                        
+                        # Детальная информация о лучшем результате
+                        if results:
+                            best_result = results[0]
+                            st.subheader("🥇 Лучший результат")
+                            
+                            # 4 колонки метрик как описано в отчете
+                            col_info1, col_info2, col_info3, col_info4 = st.columns(4)
+                            
+                            with col_info1:
+                                st.metric("Комбинированный скор", f"{best_result.combined_score:.2f}%")
+                                st.metric("Диапазон сетки", f"{best_result.params.grid_range_pct:.1f}%")
+                            
+                            with col_info2:
+                                st.metric("Бэктест vs Форвард", 
+                                        f"{best_result.backtest_score:.2f}% vs {best_result.forward_score:.2f}%")
+                                st.metric("Шаг сетки", f"{best_result.params.grid_step_pct:.2f}%")
+                            
+                            with col_info3:
+                                st.metric("Просадка", f"{best_result.max_drawdown_pct:.2f}%")
+                                st.metric("Коэфф. Шарпа", f"{best_result.sharpe_ratio:.2f}")
+                            
+                            with col_info4:
+                                st.metric("Profit Factor", f"{best_result.profit_factor:.1f}")
+                                st.metric("Стоп-лосс", f"{best_result.params.stop_loss_pct:.1f}%")
+                            
+                            # Карточка результатов в стиле отчета
+                            st.info(f"""
+                            • **Общий скор**: {best_result.combined_score:.2f}%
+                            • **Бэктест**: {best_result.backtest_score:.2f}%  
+                            • **Форвард**: {best_result.forward_score:.2f}%
+                            • **DD**: {best_result.max_drawdown_pct:.2f}% | **Sharpe**: {best_result.sharpe_ratio:.2f}
+                            • **PF**: {best_result.profit_factor:.1f} | **Сделок**: {best_result.trades_count}
+                            """)
+                            
+                            # Анализ стабильности
+                            stability = abs(best_result.backtest_score - best_result.forward_score)
+                            dd_pct = best_result.max_drawdown_pct
+                            sharpe = best_result.sharpe_ratio
+                            
+                            # Цветовая индикация качества согласно отчету
+                            if dd_pct < 10 and sharpe > 1.0 and stability < 5:
+                                st.success(f"🟢 **Отличные показатели**: DD<10%, Sharpe>1.0, стабильность<5%")
+                            elif dd_pct < 20 and sharpe > 0.5 and stability < 10:
+                                st.warning(f"🟡 **Хорошие показатели**: DD<20%, Sharpe>0.5, стабильность<10%")
+                            else:
+                                st.error(f"🔴 **Требует осторожности**: DD={dd_pct:.1f}%, Sharpe={sharpe:.2f}, нестабильность={stability:.1f}%")
+                            
+                            # Кнопка для тестирования лучших параметров
+                            st.subheader("🧪 Тестирование лучших параметров")
+                            
+                            if st.button("🔬 Протестировать лучшие параметры на полных данных"):
+                                with st.spinner("Тестирование..."):
+                                    test_stats_long, test_stats_short, test_log_long, test_log_short = grid_analyzer.estimate_dual_grid_by_candles_realistic(
+                                        df=df_opt,
+                                        initial_balance_long=opt_balance,
+                                        initial_balance_short=opt_balance,
+                                        grid_range_pct=best_result.params.grid_range_pct,
+                                        grid_step_pct=best_result.params.grid_step_pct,
+                                        order_size_usd_long=0,
+                                        order_size_usd_short=0,
+                                        commission_pct=TAKER_COMMISSION_RATE * 100,
+                                        stop_loss_pct=best_result.params.stop_loss_pct if best_result.params.stop_loss_pct > 0 else None,
+                                        max_drawdown_pct=None,  # На полных данных не ограничиваем DD
+                                        debug=False
+                                    )
+                                    
+                                    total_pnl = test_stats_long['total_pnl'] + test_stats_short['total_pnl']
+                                    total_pnl_pct = (total_pnl / (opt_balance * 2)) * 100
+                                    
+                                    st.success("✅ Тест на полных данных завершен!")
+                                    st.metric("Результат на полных данных", f"{total_pnl_pct:.2f}%", f"${total_pnl:.2f}")
                                 
                                 # Сравнение с ожидаемым результатом
                                 expected_avg = (best_result.backtest_score + best_result.forward_score) / 2
                                 difference = total_pnl_pct - expected_avg
                                 st.info(f"Отклонение от ожидаемого: {difference:.2f}%")
                     
-            except Exception as e:
-                st.error(f"Ошибка во время оптимизации: {e}")
-                st.exception(e)
+                except Exception as e:
+                    st.error(f"Ошибка во время оптимизации: {e}")
+                    st.exception(e)
+    
+    with col_opt2:
+        if st.session_state.optimization_results is not None:
+            if st.button("🗑️ Очистить результаты оптимизации", key="clear_opt_results"):
+                st.session_state.optimization_results = None
+                st.session_state.optimization_params = None
+                st.session_state.optimization_best_result = None
+                st.rerun()
 
 # Удаляем старый блок запуска анализа - теперь всё происходит в вкладке "Настройки"

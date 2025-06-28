@@ -631,6 +631,7 @@ with tab3:
             max_value=5.0, 
             value=float(default_grid_step),
             step=0.1,
+            key="grid_step_slider",
             help="Процентный шаг между уровнями сетки"
         )
         
@@ -799,6 +800,9 @@ with tab3:
                         if df_for_simulation.empty:
                             st.error("Не удалось загрузить данные для симуляции.")
                         else:
+                            # Отладочная информация
+                            st.info(f"🔧 **Параметры симуляции:** Диапазон {grid_range_pct}%, Шаг {grid_step_pct}%, Баланс {initial_balance} USDT, Стоп-лосс {stop_loss_pct}%")
+                            
                             # Запуск симуляции
                             with st.spinner(f"Запуск симуляции для {selected_pair_for_grid}..."):
                                 stats_long, stats_short, log_long_df, log_short_df = grid_analyzer.estimate_dual_grid_by_candles_realistic(

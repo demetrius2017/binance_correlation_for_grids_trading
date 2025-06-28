@@ -751,10 +751,46 @@ class GridAnalyzer:
                 
                 # Перезапуск сетки при необходимости
                 if (stop_loss_triggered_long or stop_loss_triggered_short) and stop_loss_strategy == 'reset_grid':
-                    long_grid_prices = [c * (1 - i * grid_step_pct / 100) for i in range(1, 100)]
-                    short_grid_prices = [c * (1 + i * grid_step_pct / 100) for i in range(1, 100)]
+                    if stop_loss_triggered_long:
+                        # Очищаем открытые Long ордера
+                        open_orders_long.clear()
+                        # Пересчитываем количество уровней для Long на основе оставшегося баланса
+                        if balance_long > 0 and final_order_size_long > 0:
+                            num_levels_long_new = max(1, int(balance_long / final_order_size_long))
+                            final_order_size_long = balance_long / num_levels_long_new
+                            long_grid_prices = [c * (1 - i * grid_step_pct / 100) for i in range(1, num_levels_long_new + 1)]
+                            if debug:
+                                print(f"       * Long сетка перестроена: баланс ${balance_long:.2f}, уровней {num_levels_long_new}, размер ордера ${final_order_size_long:.2f}")
+                        else:
+                            # Если баланс недостаточный, создаем минимальную сетку
+                            long_grid_prices = [c * (1 - grid_step_pct / 100)]
+                            if debug:
+                                print(f"       * Long сетка минимальная: баланс ${balance_long:.2f}")
+                    else:
+                        # Если Long стоп-лосс не сработал, сохраняем старую сетку
+                        long_grid_prices = [c * (1 - i * grid_step_pct / 100) for i in range(1, num_levels + 1)]
+                    
+                    if stop_loss_triggered_short:
+                        # Очищаем открытые Short ордера
+                        open_orders_short.clear()
+                        # Пересчитываем количество уровней для Short на основе оставшегося баланса
+                        if balance_short > 0 and final_order_size_short > 0:
+                            num_levels_short_new = max(1, int(balance_short / final_order_size_short))
+                            final_order_size_short = balance_short / num_levels_short_new
+                            short_grid_prices = [c * (1 + i * grid_step_pct / 100) for i in range(1, num_levels_short_new + 1)]
+                            if debug:
+                                print(f"       * Short сетка перестроена: баланс ${balance_short:.2f}, уровней {num_levels_short_new}, размер ордера ${final_order_size_short:.2f}")
+                        else:
+                            # Если баланс недостаточный, создаем минимальную сетку
+                            short_grid_prices = [c * (1 + grid_step_pct / 100)]
+                            if debug:
+                                print(f"       * Short сетка минимальная: баланс ${balance_short:.2f}")
+                    else:
+                        # Если Short стоп-лосс не сработал, сохраняем старую сетку
+                        short_grid_prices = [c * (1 + i * grid_step_pct / 100) for i in range(1, num_levels + 1)]
+                    
                     if debug:
-                        print(f"       * Перезапуск сетки после стоп-лосса. Новая опорная цена: {c:.4f}")
+                        print(f"       * Сетка перестроена после стоп-лосса. Новая опорная цена: {c:.4f}")
                 elif stop_loss_strategy == 'stop_trading':
                     # Очистка всех открытых ордеров
                     open_orders_long.clear()

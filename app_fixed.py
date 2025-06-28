@@ -780,6 +780,7 @@ with tab5:
                             order_size_usd_short=0, # Автоматический расчет
                             commission_pct=TAKER_COMMISSION_RATE * 100,
                             stop_loss_pct=stop_loss_pct if stop_loss_pct > 0 else None,
+                            stop_loss_strategy='reset_grid',
                             debug=False
                         )
 
@@ -1116,6 +1117,7 @@ with tab6:
                                     order_size_usd_short=0,
                                     commission_pct=TAKER_COMMISSION_RATE * 100,
                                     stop_loss_pct=best_result.params.stop_loss_pct if best_result.params.stop_loss_pct > 0 else None,
+                                    stop_loss_strategy='reset_grid',
                                     debug=False
                                 )
                                 

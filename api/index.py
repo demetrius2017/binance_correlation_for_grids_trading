@@ -1643,6 +1643,7 @@ def grid_simulation():
             order_size_usd_long=0,
             order_size_usd_short=0,
             commission_pct=TAKER_COMMISSION_RATE * 100,
+            stop_loss_strategy='reset_grid',
             debug=False
         )
         

@@ -178,6 +178,7 @@ class GridOptimizer:
                 order_size_usd_short=0,
                 commission_pct=self.commission_rate * 100,
                 stop_loss_pct=stop_loss,
+                stop_loss_strategy='reset_grid',  # Перестраиваем сетку при стоп-лоссе
                 max_drawdown_pct=None,  # Убираем ограничение по drawdown
                 debug=False
             )
@@ -193,6 +194,7 @@ class GridOptimizer:
                 order_size_usd_short=0,
                 commission_pct=self.commission_rate * 100,
                 stop_loss_pct=stop_loss,
+                stop_loss_strategy='reset_grid',  # Перестраиваем сетку при стоп-лоссе
                 max_drawdown_pct=None,  # Убираем ограничение по drawdown
                 debug=False
             )

@@ -596,6 +596,7 @@ with tab3:
         col_clear, col_use = st.columns(2)
         with col_clear:
             if st.button("🗑️ Очистить загруженные параметры"):
+                st.session_state.widget_refresh_counter += 1  # Увеличиваем счетчик для обновления виджетов
                 st.session_state.transfer_params = None
                 st.rerun()
         with col_use:
@@ -608,12 +609,15 @@ with tab3:
     st.subheader("🎛️ Параметры сетки")
     
     col1, col2, col3 = st.columns(3)
-    
-    # Определяем значения по умолчанию из переданных параметров
+      # Определяем значения по умолчанию из переданных параметров
     default_grid_range = st.session_state.transfer_params['grid_range_pct'] if st.session_state.transfer_params else 20.0
     default_grid_step = st.session_state.transfer_params['grid_step_pct'] if st.session_state.transfer_params else 1.0  
     default_balance = st.session_state.transfer_params['initial_balance'] if st.session_state.transfer_params else 1000
-    
+
+    # Инициализируем счетчик для принудительного обновления виджетов
+    if 'widget_refresh_counter' not in st.session_state:
+        st.session_state.widget_refresh_counter = 0
+
     with col1:
         grid_range_pct = st.slider(
             "Диапазон сетки (%)", 
@@ -621,6 +625,7 @@ with tab3:
             max_value=50.0, 
             value=float(default_grid_range),
             step=1.0,
+            key=f"grid_range_slider_{st.session_state.widget_refresh_counter}",
             help="Процентный диапазон для размещения сетки"
         )
     
@@ -631,9 +636,14 @@ with tab3:
             max_value=5.0, 
             value=float(default_grid_step),
             step=0.1,
-            key="grid_step_slider",
+            key=f"grid_step_slider_{st.session_state.widget_refresh_counter}",
             help="Процентный шаг между уровнями сетки"
         )
+        
+        # Отладочная информация, если есть переданные параметры
+        if st.session_state.transfer_params:
+            st.write(f"🔧 Переданный шаг: {default_grid_step}%")
+            st.write(f"🎯 Текущий шаг: {grid_step_pct}%")
         
     with col3:
         initial_balance = st.slider(
@@ -642,6 +652,7 @@ with tab3:
             max_value=50000,
             value=int(default_balance),
             step=100,
+            key=f"initial_balance_slider_{st.session_state.widget_refresh_counter}",
             help="Начальный капитал для симуляции"
         )
 
@@ -664,6 +675,7 @@ with tab3:
             max_value=365,
             value=int(default_days),
             step=1,
+            key=f"simulation_days_slider_{st.session_state.widget_refresh_counter}",
             help="Количество дней исторических данных для симуляции"
         )
     with col_b:
@@ -673,6 +685,7 @@ with tab3:
             max_value=50.0,
             value=float(default_stop_loss),
             step=2.5,
+            key=f"stop_loss_slider_{st.session_state.widget_refresh_counter}",
             help="Процент просадки для остановки торговли. 0 - отключить. Ускоряет тестирование плохих параметров."
         )
     with col_c:
@@ -680,6 +693,7 @@ with tab3:
             "Таймфрейм",
             options=["15m", "1h", "4h", "1d"],
             index=default_timeframe_index,
+            key=f"timeframe_select_{st.session_state.widget_refresh_counter}",
             help="Таймфрейм для загрузки исторических данных"
         )
 
@@ -702,7 +716,7 @@ with tab3:
             "Выберите пару для симуляции",
             current_pairs_for_grid,
             index=default_pair_index,
-            key="selected_pair_for_grid",
+            key=f"selected_pair_for_grid_{st.session_state.widget_refresh_counter}",
             help=f"Доступно {len(current_pairs_for_grid)} отфильтрованных пар"
         )
 
@@ -1124,6 +1138,8 @@ with tab4:
                     with cols[i]:
                         rank = i + 1
                         if st.button(f"🧪 #{rank}", key=f"test_top5_btn_{i}"):
+                            # Увеличиваем счетчик для принудительного обновления виджетов
+                            st.session_state.widget_refresh_counter += 1
                             # Сохраняем параметры для переноса
                             st.session_state.transfer_params = {
                                 'pair': st.session_state.optimization_params['pair'],
@@ -1136,9 +1152,12 @@ with tab4:
                                 'source': f"Топ-5 #{rank} (скор: {result.combined_score:.2f}%)"
                             }
                             st.success(f"✅ Параметры #{rank} готовы к тесту!")
+                            st.rerun()  # Принудительно перезагружаем страницу
                             
             # Кнопка "Тест" для лучшего результата
             if st.button("🏆 Тестировать лучший результат", type="primary"):
+                # Увеличиваем счетчик для принудительного обновления виджетов
+                st.session_state.widget_refresh_counter += 1
                 # Сохраняем параметры лучшего результата для переноса
                 st.session_state.transfer_params = {
                     'pair': st.session_state.optimization_params['pair'],
@@ -1152,6 +1171,7 @@ with tab4:
                 }
                 st.success("🏆 Лучшие параметры готовы! Перейдите во вкладку Grid Trading для тестирования.")
                 st.balloons()
+                st.rerun()  # Принудительно перезагружаем страницу
         
         st.markdown("---")
     
@@ -1392,6 +1412,7 @@ with tab4:
                                         order_size_usd_short=0,
                                         commission_pct=TAKER_COMMISSION_RATE * 100,
                                         stop_loss_pct=best_result.params.stop_loss_pct if best_result.params.stop_loss_pct > 0 else None,
+                                        stop_loss_strategy='reset_grid',  # Перестраиваем сетку при стоп-лоссе
                                         max_drawdown_pct=None,  # На полных данных не ограничиваем DD
                                         debug=False
                                     )
